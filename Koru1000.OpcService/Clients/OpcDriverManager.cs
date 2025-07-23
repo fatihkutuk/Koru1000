@@ -144,7 +144,7 @@ namespace Koru1000.OpcService.Clients
             {
                 // Aynı SQL sorgusu ama tüm tag'leri al
                 const string sql = @"
-                    SELECT 
+                                        SELECT 
                         dtt.id as TagId,
                         cd.id as DeviceId,
                         cd.channelName as ChannelName,
@@ -157,7 +157,7 @@ namespace Koru1000.OpcService.Clients
                     INNER JOIN devicetype dt ON cd.deviceTypeId = dt.id
                     INNER JOIN devicetypetag dtt ON dtt.deviceTypeId = dt.id
                     INNER JOIN driver_channeltype_relation dcr ON dt.ChannelTypeId = dcr.channelTypeId
-                    WHERE dcr.driverId = @DriverId AND cd.statusCode IN (11,31,41,61)
+                    WHERE cd.driverId = @DriverId AND cd.statusCode IN (11,31,41,61)
                     
                     UNION ALL
                     
@@ -174,7 +174,7 @@ namespace Koru1000.OpcService.Clients
                     INNER JOIN devicetype dt ON cd.deviceTypeId = dt.id
                     INNER JOIN deviceindividualtag dit ON dit.channelDeviceId = cd.id
                     INNER JOIN driver_channeltype_relation dcr ON dt.ChannelTypeId = dcr.channelTypeId
-                    WHERE dcr.driverId = @DriverId AND cd.statusCode IN (11,31,41,61)
+                    WHERE cd.driverId = @DriverId AND cd.statusCode IN (11,31,41,61)
                     ORDER BY DeviceId, TagName";
 
                 var results = await _dbManager.QueryExchangerAsync<dynamic>(sql, new { DriverId = _driverId });

@@ -153,7 +153,7 @@ namespace Koru1000.OpcService.Clients
                     AutoAcceptUntrustedCertificates = true,
                     AddAppCertToTrustedStore = true
                 },
-                TransportQuotas = new TransportQuotas { OperationTimeout = 15000 },
+                TransportQuotas = new TransportQuotas { OperationTimeout = 600000 },
                 ClientConfiguration = new ClientConfiguration { DefaultSessionTimeout = _limits.SessionTimeoutMs }
             };
 
