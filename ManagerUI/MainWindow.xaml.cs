@@ -369,6 +369,13 @@ namespace Koru1000.ManagerUI
                 FontWeight = FontWeights.Bold,
                 Margin = new Thickness(0, 0, 0, 10)
             });
+
+            // Channel type bilgisi varsa göster
+            if (tag.Parent is DeviceNode deviceParent && !string.IsNullOrEmpty(deviceParent.ChannelTypeName))
+            {
+                DetailsPanel.Children.Add(new TextBlock { Text = $"Channel Type: {deviceParent.ChannelTypeName}" });
+            }
+
             DetailsPanel.Children.Add(new TextBlock { Text = $"Address: {tag.TagAddress}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Data Type: {tag.DataType}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Current Value: {tag.CurrentValue ?? "N/A"}" });

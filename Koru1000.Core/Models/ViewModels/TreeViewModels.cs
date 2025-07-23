@@ -132,6 +132,10 @@ namespace Koru1000.Core.Models.ViewModels
         public string DeviceJson { get; set; }
         public DateTime LastUpdateTime { get; set; }
 
+        // Protocol ve driver bilgileri için eklenen properties
+        public string ChannelTypeName { get; set; }
+        public object DriverSettings { get; set; } // DriverSettings object'i
+
         public DeviceNode()
         {
             Icon = "🔧";
@@ -139,9 +143,9 @@ namespace Koru1000.Core.Models.ViewModels
 
         public string StatusIcon => StatusCode switch
         {
-            11 or 31 or 41 or 61 => "🟢", // Active statuses
-            51 => "🟡", // Warning
-            _ => "🔴" // Error or offline
+            11 or 31 or 41 or 61 => "🟢",
+            51 => "🟡",
+            _ => "🔴"
         };
     }
 

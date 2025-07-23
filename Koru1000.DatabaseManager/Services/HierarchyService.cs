@@ -228,24 +228,39 @@ namespace Koru1000.DatabaseManager.Services
         }
 
         /// <summary>
-        /// Driver ID ve Channel Name'e göre device'ları yükle
+        /// Driver ID ve Channel Name'e göre device'ları yükle - Channel Type bilgisini de al
+        /// </summary>
+        /// <summary>
+        /// Driver ID ve Channel Name'e göre device'ları yükle - Driver Settings'i de al
         /// </summary>
         private async Task LoadDevicesForChannel(ChannelNode channelNode, int driverId, string channelName)
         {
             try
             {
                 const string sql = @"
-                    SELECT cd.id, cd.channelName, cd.deviceTypeId, cd.statusCode, 
-                           cd.deviceJson, cd.updateTime, cd.driverId, dt.typeName, cds.statusDefinition
-                    FROM dbdataexchanger.channeldevice cd
-                    LEFT JOIN dbdataexchanger.devicetype dt ON cd.deviceTypeId = dt.id
-                    LEFT JOIN dbdataexchanger.channeldevicestatus cds ON cd.statusCode = cds.statusCode
-                    WHERE cd.driverId = @DriverId AND cd.channelName = @ChannelName
-                    ORDER BY cd.id";
+            SELECT cd.id, cd.channelName, cd.deviceTypeId, cd.statusCode, 
+                   cd.deviceJson, cd.updateTime, cd.driverId, dt.typeName, 
+                   cds.statusDefinition, ct.name as channelTypeName,
+                   d.customSettings as driverCustomSettings, d.name as driverName
+            FROM dbdataexchanger.channeldevice cd
+            LEFT JOIN dbdataexchanger.devicetype dt ON cd.deviceTypeId = dt.id
+            LEFT JOIN dbdataexchanger.channeltypes ct ON dt.ChannelTypeId = ct.id
+            LEFT JOIN dbdataexchanger.channeldevicestatus cds ON cd.statusCode = cds.statusCode
+            LEFT JOIN dbdataexchanger.driver d ON cd.driverId = d.id
+            WHERE cd.driverId = @DriverId AND cd.channelName = @ChannelName
+            ORDER BY cd.id";
 
                 var devices = await _dbManager.QueryExchangerAsync<dynamic>(sql,
                     new { DriverId = driverId, ChannelName = channelName });
                 Console.WriteLine($"Loading {devices.Count()} devices for driver {driverId}, channel {channelName}");
+
+                // Driver settings'ini parse et
+                DriverSettings driverSettings = null;
+                if (devices.Any())
+                {
+                    var firstDevice = devices.First();
+                    driverSettings = ParseDriverCustomSettings(firstDevice.driverCustomSettings?.ToString());
+                }
 
                 foreach (var device in devices)
                 {
@@ -262,10 +277,12 @@ namespace Koru1000.DatabaseManager.Services
                         LastUpdateTime = device.updateTime,
                         Parent = channelNode,
                         IsExpanded = false,
-                        IsChildrenLoaded = false
+                        IsChildrenLoaded = false,
+                        // Custom properties
+                        ChannelTypeName = device.channelTypeName ?? "Unknown",
+                        DriverSettings = driverSettings
                     };
 
-                    // Bu device'ın tag'leri var mı
                     if (await HasTagsForDevice((int)device.id, device.deviceTypeId ?? 0))
                     {
                         deviceNode.AddDummyChild();
@@ -281,41 +298,100 @@ namespace Koru1000.DatabaseManager.Services
             }
         }
 
+        private DriverSettings ParseDriverCustomSettings(string customSettingsJson)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(customSettingsJson))
+                    return new DriverSettings { ProtocolType = "UNKNOWN" };
+
+                using var doc = JsonDocument.Parse(customSettingsJson);
+                var root = doc.RootElement;
+
+                var settings = new DriverSettings
+                {
+                    ProtocolType = root.TryGetProperty("protocolType", out var protocolType) ?
+                                  protocolType.GetString() : "UNKNOWN"
+                };
+
+                // Protocol-specific parsing
+                switch (settings.ProtocolType?.ToUpper())
+                {
+                    case "OPC":
+                        settings.Namespace = root.TryGetProperty("namespace", out var ns) ?
+                                           ns.GetString() : "0";
+                        settings.AddressFormat = root.TryGetProperty("addressFormat", out var addrFormat) ?
+                                                addrFormat.GetString() : "ns={namespace};{channelName}.{deviceName}.{tagName}";
+                        break;
+
+                    case "MODBUS":
+                        if (root.TryGetProperty("addressFormat", out var modbusAddrFormat))
+                        {
+                            if (modbusAddrFormat.TryGetProperty("showFunctionCode", out var showFC))
+                                settings.AddressFormatSettings["showFunctionCode"] = showFC.GetBoolean();
+                            if (modbusAddrFormat.TryGetProperty("showDataType", out var showDT))
+                                settings.AddressFormatSettings["showDataType"] = showDT.GetBoolean();
+                            if (modbusAddrFormat.TryGetProperty("format", out var format))
+                                settings.AddressFormat = format.GetString();
+                        }
+                        break;
+
+                    case "MQTT":
+                        if (root.TryGetProperty("addressFormat", out var mqttAddrFormat))
+                        {
+                            if (mqttAddrFormat.TryGetProperty("topicFormat", out var topicFormat))
+                                settings.AddressFormat = topicFormat.GetString();
+                            if (mqttAddrFormat.TryGetProperty("payloadType", out var payloadType))
+                                settings.AddressFormatSettings["payloadType"] = payloadType.GetString();
+                            if (mqttAddrFormat.TryGetProperty("jsonPath", out var jsonPath))
+                                settings.AddressFormatSettings["jsonPath"] = jsonPath.GetString();
+                        }
+                        break;
+                }
+
+                return settings;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error parsing driver custom settings: {ex.Message}");
+                return new DriverSettings { ProtocolType = "UNKNOWN" };
+            }
+        }
+
         private async Task LoadTagsForDevice(DeviceNode deviceNode, int deviceId, int deviceTypeId)
         {
             try
             {
-                // Device Type Tags (genel tag'ler) - limitleyelim
                 const string deviceTypeTagsSql = @"
-                    SELECT id, tagJson
-                    FROM dbdataexchanger.devicetypetag 
-                    WHERE deviceTypeId = @DeviceTypeId
-                    ORDER BY id
-                    LIMIT 20"; // İlk 20 tag'i al
+            SELECT id, tagJson
+            FROM dbdataexchanger.devicetypetag 
+            WHERE deviceTypeId = @DeviceTypeId
+            ORDER BY id
+            LIMIT 20";
 
                 var deviceTypeTags = await _dbManager.QueryExchangerAsync<DeviceTypeTag>(
                     deviceTypeTagsSql, new { DeviceTypeId = deviceTypeId });
 
-                Console.WriteLine($"Loading {deviceTypeTags.Count()} tags for device {deviceId}");
+                Console.WriteLine($"Loading {deviceTypeTags.Count()} tags for device {deviceId}, protocol: {((DriverSettings)deviceNode.DriverSettings)?.ProtocolType}");
 
                 foreach (var tag in deviceTypeTags)
                 {
-                    var tagData = ParseTagJson(tag.TagJson);
-                    if (tagData != null)
+                    var tagAddressInfo = ParseTagForProtocol(tag.TagJson, deviceNode);
+                    if (tagAddressInfo != null)
                     {
-                        var tagValue = await GetCurrentTagValue(deviceId, tagData.Name);
+                        var tagValue = await GetCurrentTagValue(deviceId, tagAddressInfo.Name);
 
                         var tagNode = new TagNode
                         {
                             Id = tag.Id,
-                            Name = tagData.Name,
-                            DisplayName = $"🏷️ {tagData.Name} [{tagData.DataType}] = {tagValue ?? "N/A"}",
-                            TagAddress = tagData.Address,
-                            DataType = tagData.DataType,
+                            Name = tagAddressInfo.Name,
+                            DisplayName = GetTagDisplayName(tagAddressInfo, tagValue),
+                            TagAddress = tagAddressInfo.FormattedAddress,
+                            DataType = tagAddressInfo.DataType,
                             CurrentValue = tagValue,
                             Parent = deviceNode,
                             Quality = "Good",
-                            IsWritable = tagData.IsWritable,
+                            IsWritable = tagAddressInfo.IsWritable,
                             LastReadTime = DateTime.Now
                         };
 
@@ -323,7 +399,6 @@ namespace Koru1000.DatabaseManager.Services
                     }
                 }
 
-                // Individual Tags (cihaza özel tag'ler) de varsa ekle
                 await LoadIndividualTagsForDevice(deviceNode, deviceId);
 
                 Console.WriteLine($"Loaded total {deviceNode.Children.Count} tags for device {deviceId}");
@@ -335,23 +410,282 @@ namespace Koru1000.DatabaseManager.Services
             }
         }
 
+        private TagAddressInfo ParseTagForProtocol(string tagJson, DeviceNode deviceNode)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(tagJson))
+                    return null;
+
+                using var doc = JsonDocument.Parse(tagJson);
+                var root = doc.RootElement;
+
+                var driverSettings = (DriverSettings)deviceNode.DriverSettings;
+                var protocolType = driverSettings?.ProtocolType?.ToUpper() ?? "UNKNOWN";
+
+                var tagInfo = new TagAddressInfo
+                {
+                    Name = root.TryGetProperty("common.ALLTYPES_NAME", out var name) ?
+                           name.GetString() : "Unknown",
+                    Description = root.TryGetProperty("common.ALLTYPES_DESCRIPTION", out var desc) ?
+                                 desc.GetString() : "",
+                    DataType = root.TryGetProperty("servermain.TAG_DATA_TYPE", out var type) ?
+                              GetDataTypeName(type.GetInt32()) : "Unknown",
+                    IsWritable = root.TryGetProperty("servermain.TAG_READ_WRITE_ACCESS", out var access) ?
+                                access.GetInt32() != 0 : false,
+                    Address = root.TryGetProperty("servermain.TAG_ADDRESS", out var addr) ?
+                             addr.GetString() : "0",
+                    ScanRateMs = root.TryGetProperty("servermain.TAG_SCAN_RATE_MILLISECONDS", out var scanRate) ?
+                                scanRate.GetInt32() : 1000,
+                    ProtocolType = protocolType
+                };
+
+                // Scaling bilgilerini al
+                ParseScalingInfo(root, tagInfo);
+
+                // Protocol-specific address formatting
+                switch (protocolType)
+                {
+                    case "OPC":
+                        tagInfo.FormattedAddress = BuildOpcAddress(root, tagInfo, deviceNode, driverSettings);
+                        tagInfo.DisplayAddress = $"Node: {tagInfo.FormattedAddress}";
+                        break;
+
+                    case "MODBUS":
+                        tagInfo.FormattedAddress = BuildModbusAddress(root, tagInfo, deviceNode, driverSettings);
+                        tagInfo.DisplayAddress = tagInfo.FormattedAddress;
+                        break;
+
+                    case "MQTT":
+                        tagInfo.FormattedAddress = BuildMqttAddress(root, tagInfo, deviceNode, driverSettings);
+                        tagInfo.DisplayAddress = $"Topic: {tagInfo.FormattedAddress}";
+                        break;
+
+                    case "DNP3":
+                        tagInfo.FormattedAddress = BuildDnp3Address(root, tagInfo, deviceNode, driverSettings);
+                        tagInfo.DisplayAddress = tagInfo.FormattedAddress;
+                        break;
+
+                    default:
+                        // Fallback - direkt TAG_ADDRESS kullan
+                        tagInfo.FormattedAddress = tagInfo.Address;
+                        tagInfo.DisplayAddress = $"Addr: {tagInfo.Address}";
+                        break;
+                }
+
+                return tagInfo;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error parsing tag for protocol: {ex.Message}");
+                return null;
+            }
+        }
+
+        private void ParseScalingInfo(JsonElement root, TagAddressInfo tagInfo)
+        {
+            try
+            {
+                tagInfo.HasScaling = root.TryGetProperty("servermain.TAG_SCALING_TYPE", out var scalingType) &&
+                                    scalingType.GetInt32() != 0;
+
+                if (tagInfo.HasScaling)
+                {
+                    tagInfo.RawLow = root.TryGetProperty("servermain.TAG_SCALING_RAW_LOW", out var rawLow) ?
+                                    rawLow.GetDouble() : 0;
+                    tagInfo.RawHigh = root.TryGetProperty("servermain.TAG_SCALING_RAW_HIGH", out var rawHigh) ?
+                                     rawHigh.GetDouble() : 1000;
+                    tagInfo.ScaledLow = root.TryGetProperty("servermain.TAG_SCALING_SCALED_LOW", out var scaledLow) ?
+                                       scaledLow.GetDouble() : 0;
+                    tagInfo.ScaledHigh = root.TryGetProperty("servermain.TAG_SCALING_SCALED_HIGH", out var scaledHigh) ?
+                                        scaledHigh.GetDouble() : 1000;
+                    tagInfo.ScalingUnits = root.TryGetProperty("servermain.TAG_SCALING_UNITS", out var units) ?
+                                          units.GetString() : "";
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error parsing scaling info: {ex.Message}");
+                tagInfo.HasScaling = false;
+            }
+        }
+
+        private string BuildOpcAddress(JsonElement root, TagAddressInfo tagInfo, DeviceNode deviceNode, DriverSettings driverSettings)
+        {
+            // Önce direkt node string var mı kontrol et (KEPServer gibi durumlarda)
+            if (root.TryGetProperty("opc.NODE_STRING", out var nodeString) && !string.IsNullOrWhiteSpace(nodeString.GetString()))
+            {
+                return nodeString.GetString();
+            }
+
+            // Node string yoksa, driver settings'den namespace ile oluştur
+            var namespaceName = driverSettings?.Namespace ?? "0";
+            var channelName = deviceNode.Parent?.Name ?? "UnknownChannel";
+            var deviceName = deviceNode.Name ?? "UnknownDevice";
+
+            // Driver settings'de format varsa kullan
+            if (!string.IsNullOrWhiteSpace(driverSettings?.AddressFormat))
+            {
+                return driverSettings.AddressFormat
+                    .Replace("{namespace}", namespaceName)
+                    .Replace("{channelName}", channelName)
+                    .Replace("{deviceName}", deviceName)
+                    .Replace("{tagName}", tagInfo.Name);
+            }
+
+            // Varsayılan OPC format
+            return $"ns={namespaceName};{channelName}.{deviceName}.{tagInfo.Name}";
+        }
+
+        private string BuildModbusAddress(JsonElement root, TagAddressInfo tagInfo, DeviceNode deviceNode, DriverSettings driverSettings)
+        {
+            // servermain.TAG_ADDRESS'den gerçek adresi al
+            var address = tagInfo.Address; // Bu zaten servermain.TAG_ADDRESS'den alınmış
+
+            // Function Code'u tahmin et (data type'a göre)
+            var functionCode = EstimateModbusFunctionCode(root, tagInfo);
+
+            var showFunctionCode = driverSettings?.AddressFormatSettings.ContainsKey("showFunctionCode") == true ?
+                                  (bool)driverSettings.AddressFormatSettings["showFunctionCode"] : true;
+            var showDataType = driverSettings?.AddressFormatSettings.ContainsKey("showDataType") == true ?
+                              (bool)driverSettings.AddressFormatSettings["showDataType"] : true;
+            var showScanRate = driverSettings?.AddressFormatSettings.ContainsKey("showScanRate") == true ?
+                              (bool)driverSettings.AddressFormatSettings["showScanRate"] : false;
+
+            var addressParts = new List<string> { $"Addr: {address}" };
+
+            if (showFunctionCode)
+                addressParts.Add($"FC: {functionCode}");
+
+            if (showDataType)
+                addressParts.Add($"Type: {tagInfo.DataType}");
+
+            if (showScanRate && tagInfo.ScanRateMs > 0)
+                addressParts.Add($"Scan: {tagInfo.ScanRateMs}ms");
+
+            // Scaling bilgisi varsa ekle
+            if (tagInfo.HasScaling)
+            {
+                var scalingInfo = $"Scale: {tagInfo.RawLow}-{tagInfo.RawHigh} → {tagInfo.ScaledLow}-{tagInfo.ScaledHigh}";
+                if (!string.IsNullOrWhiteSpace(tagInfo.ScalingUnits))
+                    scalingInfo += $" {tagInfo.ScalingUnits}";
+                addressParts.Add(scalingInfo);
+            }
+
+            return string.Join(", ", addressParts);
+        }
+
+        private int EstimateModbusFunctionCode(JsonElement root, TagAddressInfo tagInfo)
+        {
+            // Tag'ın read/write durumuna ve data type'ına göre function code tahmin et
+            var isWritable = tagInfo.IsWritable;
+            var address = int.TryParse(tagInfo.Address, out var addr) ? addr : 0;
+
+            // Genel Modbus function code kuralları
+            if (address >= 1 && address <= 9999) // Coils
+                return isWritable ? 5 : 1; // Write Single Coil : Read Coils
+            else if (address >= 10001 && address <= 19999) // Discrete Inputs
+                return 2; // Read Discrete Inputs
+            else if (address >= 30001 && address <= 39999) // Input Registers
+                return 4; // Read Input Registers
+            else if (address >= 40001 && address <= 49999) // Holding Registers
+                return isWritable ? 6 : 3; // Write Single Register : Read Holding Registers
+            else
+                return 3; // Default: Read Holding Registers
+        }
+
+        private string BuildMqttAddress(JsonElement root, TagAddressInfo tagInfo, DeviceNode deviceNode, DriverSettings driverSettings)
+        {
+            // MQTT için önce alias var mı kontrol et
+            if (root.TryGetProperty("mqtt.ALIAS", out var alias) && !string.IsNullOrWhiteSpace(alias.GetString()))
+            {
+                return alias.GetString();
+            }
+
+            // Topic format kullanarak oluştur
+            var topicFormat = driverSettings?.AddressFormat ?? "{channelName}/{deviceName}/{tagName}";
+            var channelName = deviceNode.Parent?.Name ?? "unknown";
+            var deviceName = deviceNode.Name ?? "unknown";
+
+            var topic = topicFormat
+                .Replace("{channelName}", channelName)
+                .Replace("{deviceName}", deviceName)
+                .Replace("{tagName}", tagInfo.Name);
+
+            // Payload type bilgisi varsa ekle
+            var payloadType = driverSettings?.AddressFormatSettings.ContainsKey("payloadType") == true ?
+                             (string)driverSettings.AddressFormatSettings["payloadType"] : "JSON";
+
+            if (payloadType != "RAW")
+            {
+                var jsonPath = driverSettings?.AddressFormatSettings.ContainsKey("jsonPath") == true ?
+                              (string)driverSettings.AddressFormatSettings["jsonPath"] : "$.value";
+                return $"{topic} ({payloadType}: {jsonPath})";
+            }
+
+            return topic;
+        }
+
+        private string BuildDnp3Address(JsonElement root, TagAddressInfo tagInfo, DeviceNode deviceNode, DriverSettings driverSettings)
+        {
+            var address = tagInfo.Address;
+            var dataType = tagInfo.DataType;
+
+            // DNP3 için point type'ı belirle
+            var pointType = "AI"; // Analog Input default
+            if (tagInfo.DataType.Contains("Boolean") || tagInfo.DataType.Contains("Word"))
+                pointType = tagInfo.IsWritable ? "BO" : "BI"; // Binary Output/Input
+            else if (tagInfo.IsWritable)
+                pointType = "AO"; // Analog Output
+
+            var addressParts = new List<string>
+    {
+        $"Point: {pointType}{address}",
+        $"Type: {dataType}"
+    };
+
+            if (tagInfo.ScanRateMs > 0)
+                addressParts.Add($"Scan: {tagInfo.ScanRateMs}ms");
+
+            return string.Join(", ", addressParts);
+        }
+
+        private string GetTagDisplayName(TagAddressInfo tagInfo, object tagValue, bool isIndividual = false)
+        {
+            var individualText = isIndividual ? " [Individual]" : "";
+            var protocolIcon = GetProtocolIcon(tagInfo.ProtocolType);
+
+            return $"🏷️ {tagInfo.Name}{individualText} [{tagInfo.DataType}] {protocolIcon} = {tagValue ?? "N/A"}";
+        }
+
+        private string GetProtocolIcon(string protocolType)
+        {
+            return protocolType?.ToUpper() switch
+            {
+                "OPC" => "🔗",
+                "MODBUS" => "📡",
+                "MQTT" => "📨",
+                "DNP3" => "⚡",
+                _ => "❓"
+            };
+        }
         private async Task LoadIndividualTagsForDevice(DeviceNode deviceNode, int deviceId)
         {
             try
             {
                 const string sql = @"
-                    SELECT id, tagJson
-                    FROM dbdataexchanger.deviceindividualtag 
-                    WHERE channelDeviceId = @DeviceId
-                    ORDER BY id
-                    LIMIT 10"; // İlk 10 individual tag
+            SELECT id, tagJson
+            FROM dbdataexchanger.deviceindividualtag 
+            WHERE channelDeviceId = @DeviceId
+            ORDER BY id
+            LIMIT 10"; // İlk 10 individual tag
 
                 var individualTags = await _dbManager.QueryExchangerAsync<DeviceIndividualTag>(
                     sql, new { DeviceId = deviceId });
 
                 foreach (var tag in individualTags)
                 {
-                    var tagData = ParseTagJson(tag.TagJson);
+                    var tagData = ParseTagJson(tag.TagJson, deviceNode.ChannelTypeName);
                     if (tagData != null)
                     {
                         var tagValue = await GetCurrentTagValue(deviceId, tagData.Name);
@@ -360,8 +694,8 @@ namespace Koru1000.DatabaseManager.Services
                         {
                             Id = tag.Id,
                             Name = tagData.Name,
-                            DisplayName = $"🏷️ {tagData.Name} [Individual] [{tagData.DataType}] = {tagValue ?? "N/A"}",
-                            TagAddress = tagData.Address,
+                            DisplayName = GetTagDisplayName(tagData, tagValue, deviceNode.ChannelTypeName, true),
+                            TagAddress = GetTagAddress(tagData, deviceNode.ChannelTypeName),
                             DataType = tagData.DataType,
                             CurrentValue = tagValue,
                             Parent = deviceNode,
@@ -496,7 +830,7 @@ namespace Koru1000.DatabaseManager.Services
             }
         }
 
-        private TagInfo ParseTagJson(string tagJson)
+        private TagInfo ParseTagJson(string tagJson, string channelTypeName)
         {
             try
             {
@@ -506,17 +840,56 @@ namespace Koru1000.DatabaseManager.Services
                 using var doc = JsonDocument.Parse(tagJson);
                 var root = doc.RootElement;
 
-                return new TagInfo
+                var tagInfo = new TagInfo
                 {
                     Name = root.TryGetProperty("common.ALLTYPES_NAME", out var name) ?
                            name.GetString() : "Unknown",
-                    Address = root.TryGetProperty("servermain.TAG_ADDRESS", out var addr) ?
-                             addr.GetString() : "",
                     DataType = root.TryGetProperty("servermain.TAG_DATA_TYPE", out var type) ?
                               GetDataTypeName(type.GetInt32()) : "Unknown",
                     IsWritable = root.TryGetProperty("servermain.TAG_READ_WRITE_ACCESS", out var access) ?
-                                access.GetInt32() != 0 : false
+                                access.GetInt32() != 0 : false,
+                    ChannelTypeName = channelTypeName
                 };
+
+                // Channel Type'a göre adres bilgilerini parse et
+                switch (channelTypeName?.ToUpper())
+                {
+                    case "OPC" or "OPC-UA":
+                        // OPC için node bilgilerini al
+                        tagInfo.OpcNodeId = root.TryGetProperty("opc.NODE_ID", out var nodeId) ?
+                                           nodeId.GetString() : null;
+                        tagInfo.OpcNamespace = root.TryGetProperty("opc.NAMESPACE", out var ns) ?
+                                              ns.GetString() : null;
+                        tagInfo.Address = $"ns={tagInfo.OpcNamespace};i={tagInfo.OpcNodeId}";
+                        break;
+
+                    case "KEPSERVER" or "KEPSERVEREX":
+                        // KEPServer için node string'i al
+                        tagInfo.NodeString = root.TryGetProperty("kep.NODE_STRING", out var nodeString) ?
+                                            nodeString.GetString() : null;
+                        tagInfo.Address = tagInfo.NodeString ??
+                                         (root.TryGetProperty("servermain.TAG_ADDRESS", out var addr) ?
+                                          addr.GetString() : "");
+                        break;
+
+                    case "MODBUS" or "MODBUS TCP IP":
+                        // Modbus için adres ve function code'u al
+                        tagInfo.ModbusAddress = root.TryGetProperty("modbus.ADDRESS", out var mbAddr) ?
+                                               mbAddr.GetString() : null;
+                        tagInfo.ModbusFunctionCode = root.TryGetProperty("modbus.FUNCTION_CODE", out var funcCode) ?
+                                                    funcCode.GetInt32() : null;
+                        tagInfo.Address = $"{tagInfo.ModbusAddress}" +
+                                         (tagInfo.ModbusFunctionCode.HasValue ? $" (FC:{tagInfo.ModbusFunctionCode})" : "");
+                        break;
+
+                    default:
+                        // Genel durumda TAG_ADDRESS'i kullan
+                        tagInfo.Address = root.TryGetProperty("servermain.TAG_ADDRESS", out var defaultAddr) ?
+                                         defaultAddr.GetString() : "";
+                        break;
+                }
+
+                return tagInfo;
             }
             catch (Exception ex)
             {
@@ -524,7 +897,36 @@ namespace Koru1000.DatabaseManager.Services
                 return null;
             }
         }
+        private string GetTagDisplayName(TagInfo tagData, object tagValue, string channelTypeName, bool isIndividual = false)
+        {
+            var individualText = isIndividual ? " [Individual]" : "";
+            var channelTypeIcon = GetChannelTypeIcon(channelTypeName);
 
+            return $"🏷️ {tagData.Name}{individualText} [{tagData.DataType}] {channelTypeIcon} = {tagValue ?? "N/A"}";
+        }
+
+        private string GetTagAddress(TagInfo tagData, string channelTypeName)
+        {
+            return channelTypeName?.ToUpper() switch
+            {
+                "OPC" or "OPC-UA" => $"Node: {tagData.OpcNodeId}, NS: {tagData.OpcNamespace}",
+                "KEPSERVER" or "KEPSERVEREX" => $"Node: {tagData.NodeString}",
+                "MODBUS" or "MODBUS TCP IP" => $"Addr: {tagData.ModbusAddress}" +
+                                              (tagData.ModbusFunctionCode.HasValue ? $", FC: {tagData.ModbusFunctionCode}" : ""),
+                _ => tagData.Address
+            };
+        }
+
+        private string GetChannelTypeIcon(string channelTypeName)
+        {
+            return channelTypeName?.ToUpper() switch
+            {
+                "OPC" or "OPC-UA" => "🔗",
+                "KEPSERVER" or "KEPSERVEREX" => "🔧",
+                "MODBUS" or "MODBUS TCP IP" => "📡",
+                _ => "❓"
+            };
+        }
         private string GetDataTypeName(int dataType)
         {
             return dataType switch
@@ -564,8 +966,51 @@ namespace Koru1000.DatabaseManager.Services
             public string Address { get; set; }
             public string DataType { get; set; }
             public bool IsWritable { get; set; }
+
+            // Channel type'a göre adres bilgileri
+            public string OpcNodeId { get; set; }
+            public string OpcNamespace { get; set; }
+            public string NodeString { get; set; }
+            public string ModbusAddress { get; set; }
+            public int? ModbusFunctionCode { get; set; }
+            public string ChannelTypeName { get; set; }
+        }
+        private class TagAddressInfo
+        {
+            public string Name { get; set; }
+            public string DataType { get; set; }
+            public bool IsWritable { get; set; }
+            public string ProtocolType { get; set; }
+
+            // Temel tag bilgileri
+            public string Address { get; set; }
+            public int ScanRateMs { get; set; }
+            public string Description { get; set; }
+
+            // Scaling bilgileri
+            public bool HasScaling { get; set; }
+            public double RawLow { get; set; }
+            public double RawHigh { get; set; }
+            public double ScaledLow { get; set; }
+            public double ScaledHigh { get; set; }
+            public string ScalingUnits { get; set; }
+
+            // Protocol-specific data
+            public Dictionary<string, object> ProtocolSpecificData { get; set; } = new();
+
+            // Display için hesaplanmış değerler
+            public string FormattedAddress { get; set; }
+            public string DisplayAddress { get; set; }
         }
 
+        private class DriverSettings
+        {
+            public string ProtocolType { get; set; }
+            public string Namespace { get; set; }
+            public string AddressFormat { get; set; }
+            public Dictionary<string, object> ConnectionSettings { get; set; } = new();
+            public Dictionary<string, object> AddressFormatSettings { get; set; } = new();
+        }
         #endregion
     }
 }
