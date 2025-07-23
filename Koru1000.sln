@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.13.35931.197 d17.13
+VisualStudioVersion = 17.13.35931.197
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Koru1000.Core", "Koru1000.Core\Koru1000.Core.csproj", "{00430F1F-F2F3-4E3D-BB2A-24C16562A4F5}"
 EndProject
@@ -10,6 +10,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Koru1000.Shared", "Koru1000.Shared\Koru1000.Shared.csproj", "{7173C4C7-D5EF-4CC8-8EA3-2CEE6A4BD7D2}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ManagerUI", "ManagerUI\ManagerUI.csproj", "{F505592F-6EFC-4A54-A882-1BFBA47E00D8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Koru1000.OpcService", "Koru1000.OpcService\Koru1000.OpcService.csproj", "{9BC21633-996A-404A-B687-1E5983A613FD}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -33,6 +35,10 @@ Global
 		{F505592F-6EFC-4A54-A882-1BFBA47E00D8}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{F505592F-6EFC-4A54-A882-1BFBA47E00D8}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{F505592F-6EFC-4A54-A882-1BFBA47E00D8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9BC21633-996A-404A-B687-1E5983A613FD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9BC21633-996A-404A-B687-1E5983A613FD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9BC21633-996A-404A-B687-1E5983A613FD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9BC21633-996A-404A-B687-1E5983A613FD}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
