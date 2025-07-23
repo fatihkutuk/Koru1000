@@ -7,6 +7,7 @@ namespace Koru1000.Core.Models.ViewModels
     {
         private bool _isExpanded;
         private bool _isSelected;
+        private bool _isLoading;
 
         public string Name { get; set; }
         public string DisplayName { get; set; }
@@ -14,6 +15,10 @@ namespace Koru1000.Core.Models.ViewModels
         public int Id { get; set; }
         public TreeNodeBase Parent { get; set; }
         public ObservableCollection<TreeNodeBase> Children { get; set; } = new();
+
+        // Lazy loading için eklenen property'ler
+        public bool HasDummyChild { get; set; } = false;
+        public bool IsChildrenLoaded { get; set; } = false;
 
         public bool IsExpanded
         {
@@ -35,12 +40,59 @@ namespace Koru1000.Core.Models.ViewModels
             }
         }
 
+        public bool IsLoading
+        {
+            get => _isLoading;
+            set
+            {
+                _isLoading = value;
+                OnPropertyChanged(nameof(IsLoading));
+            }
+        }
+
         public abstract string NodeType { get; }
 
         public event PropertyChangedEventHandler PropertyChanged;
         protected virtual void OnPropertyChanged(string propertyName)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+
+        // Dummy child eklemek için helper method
+        public void AddDummyChild()
+        {
+            if (!HasDummyChild && Children.Count == 0)
+            {
+                Children.Add(new DummyNode { Parent = this });
+                HasDummyChild = true;
+            }
+        }
+
+        // Dummy child'ı kaldırmak için
+        public void RemoveDummyChild()
+        {
+            if (HasDummyChild)
+            {
+                var dummy = Children.FirstOrDefault(c => c is DummyNode);
+                if (dummy != null)
+                {
+                    Children.Remove(dummy);
+                    HasDummyChild = false;
+                }
+            }
+        }
+    }
+
+    // Dummy node class'ı - genişletilebilir göstermek için
+    public class DummyNode : TreeNodeBase
+    {
+        public override string NodeType => "Dummy";
+
+        public DummyNode()
+        {
+            Name = "Loading...";
+            DisplayName = "Loading...";
+            Icon = "⏳";
         }
     }
 

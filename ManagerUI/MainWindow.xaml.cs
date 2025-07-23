@@ -19,6 +19,7 @@ namespace Koru1000.ManagerUI
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         static extern bool AllocConsole();
+
         private DatabaseManager.DatabaseManager _dbManager;
         private ChannelDeviceRepository _channelDeviceRepo;
         private ChannelTypesRepository _channelTypesRepo;
@@ -30,6 +31,7 @@ namespace Koru1000.ManagerUI
 
         public MainWindow()
         {
+            AllocConsole(); // Console penceresi aç - Debug için
             InitializeComponent();
             this.Loaded += MainWindow_Loaded;
         }
@@ -125,7 +127,13 @@ namespace Koru1000.ManagerUI
                     _tagRepo = new TagRepository(_dbManager);
                     _hierarchyService = new HierarchyService(_dbManager);
 
-                    StatusText.Text = "Veritabanı yapılandırıldı - Bağlanmak için 'Bağlan' butonuna tıklayın";
+                    StatusText.Text = "Veritabanı yapılandırıldı - Otomatik bağlanılıyor...";
+
+                    // Otomatik bağlantı dene
+                    _ = Task.Run(async () =>
+                    {
+                        await AutoConnectAsync();
+                    });
                 }
             }
             catch (Exception ex)
@@ -133,6 +141,44 @@ namespace Koru1000.ManagerUI
                 MessageBox.Show($"Veritabanı yapılandırma hatası: {ex.Message}", "Hata",
                     MessageBoxButton.OK, MessageBoxImage.Error);
                 StatusText.Text = "Veritabanı yapılandırma hatası";
+            }
+        }
+
+        private async Task AutoConnectAsync()
+        {
+            try
+            {
+                bool exchangerConnected = await _dbManager.TestExchangerConnectionAsync();
+
+                if (exchangerConnected)
+                {
+                    await Dispatcher.InvokeAsync(async () =>
+                    {
+                        ConnectionStatus.Fill = Brushes.Green;
+                        ConnectionText.Text = "Bağlı";
+                        StatusText.Text = "Otomatik olarak bağlanıldı - Hiyerarşi yükleniyor...";
+
+                        // Hiyerarşiyi yükle
+                        await LoadHierarchy();
+
+                        // Dashboard stats'ları da yükle
+                        await LoadDashboardStats();
+                    });
+                }
+                else
+                {
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        StatusText.Text = "Veritabanı yapılandırıldı - Manuel bağlantı gerekli";
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    StatusText.Text = $"Otomatik bağlantı başarısız: {ex.Message}";
+                });
             }
         }
 
@@ -169,12 +215,46 @@ namespace Koru1000.ManagerUI
 
         private void AboutMenuItem_Click(object sender, RoutedEventArgs e)
         {
-            MessageBox.Show("Koru1000 Database Manager\nVersion 1.0\n\nEndüstriyel veri toplama ve yönetim sistemi",
+            MessageBox.Show("Koru1000 Database Manager\nVersion 1.0\n\nEndüstriyel veri toplama ve yönetim sistemi\n\nLazy Loading ile performanslı hiyerarşi görüntüleme",
                 "Hakkında", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         #endregion
 
         #region Hiyerarşi Event'leri
+
+        /// <summary>
+        /// TreeView item genişletildiğinde çağrılır - Lazy loading için kritik
+        /// </summary>
+        private async void TreeViewItem_Expanded(object sender, RoutedEventArgs e)
+        {
+            if (sender is TreeViewItem treeViewItem && treeViewItem.DataContext is TreeNodeBase node)
+            {
+                if (!node.IsChildrenLoaded && _hierarchyService != null)
+                {
+                    try
+                    {
+                        StatusText.Text = $"Loading children for {node.Name}...";
+                        Console.WriteLine($"=== EXPANDING NODE: {node.NodeType} - {node.Name} ===");
+
+                        await _hierarchyService.LoadChildrenAsync(node);
+
+                        StatusText.Text = $"Loaded {node.Children.Count} children for {node.Name}";
+                        Console.WriteLine($"=== LOADED {node.Children.Count} CHILDREN FOR {node.Name} ===");
+
+                        // Hierarchy stats'ı güncelle
+                        UpdateHierarchyStats();
+                    }
+                    catch (Exception ex)
+                    {
+                        StatusText.Text = $"Error loading children: {ex.Message}";
+                        Console.WriteLine($"=== ERROR LOADING CHILDREN: {ex.Message} ===");
+                        MessageBox.Show($"Error loading children for {node.Name}: {ex.Message}",
+                            "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                }
+            }
+        }
+
         private void HierarchyTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
         {
             if (e.NewValue is TreeNodeBase selectedNode)
@@ -218,6 +298,9 @@ namespace Koru1000.ManagerUI
                 case TagNode tag:
                     ShowTagDetails(tag);
                     break;
+                case DummyNode dummy:
+                    ShowDummyDetails(dummy);
+                    break;
             }
 
             if (DetailsTab != null)
@@ -233,8 +316,11 @@ namespace Koru1000.ManagerUI
                 FontWeight = FontWeights.Bold,
                 Margin = new Thickness(0, 0, 0, 10)
             });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Type: {driver.DriverTypeName}" });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Channels: {driver.Children.Count}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Type: {driver.DriverTypeName ?? "Driver Instance"}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"ID: {driver.Id}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Children: {driver.Children.Count}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Children Loaded: {(driver.IsChildrenLoaded ? "Yes" : "No")}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Is Loading: {(driver.IsLoading ? "Yes" : "No")}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Connected: {(driver.IsConnected ? "Yes" : "No")}" });
         }
 
@@ -247,9 +333,12 @@ namespace Koru1000.ManagerUI
                 FontWeight = FontWeights.Bold,
                 Margin = new Thickness(0, 0, 0, 10)
             });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Type: {channel.ChannelTypeName}" });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Devices: {channel.Children.Count}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Type: {channel.ChannelTypeName ?? "Channel Instance"}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"ID: {channel.Id}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Channel Type ID: {channel.ChannelTypeId}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Children: {channel.Children.Count}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Children Loaded: {(channel.IsChildrenLoaded ? "Yes" : "No")}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Is Loading: {(channel.IsLoading ? "Yes" : "No")}" });
         }
 
         private void ShowDeviceDetails(DeviceNode device)
@@ -263,10 +352,12 @@ namespace Koru1000.ManagerUI
             });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Status: {device.StatusDescription} {device.StatusIcon}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Type: {device.DeviceTypeName}" });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Tags: {device.Children.Count}" });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Last Update: {device.LastUpdateTime}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Device ID: {device.Id}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Device Type ID: {device.DeviceTypeId}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Status Code: {device.StatusCode}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Tags: {device.Children.Count}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Tags Loaded: {(device.IsChildrenLoaded ? "Yes" : "No")}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Last Update: {device.LastUpdateTime}" });
         }
 
         private void ShowTagDetails(TagNode tag)
@@ -284,6 +375,20 @@ namespace Koru1000.ManagerUI
             DetailsPanel.Children.Add(new TextBlock { Text = $"Quality: {tag.Quality} {tag.QualityIcon}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Writable: {(tag.IsWritable ? "Yes" : "No")}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Last Read: {tag.LastReadTime}" });
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Tag ID: {tag.Id}" });
+        }
+
+        private void ShowDummyDetails(DummyNode dummy)
+        {
+            DetailsPanel.Children.Add(new TextBlock
+            {
+                Text = "⏳ Loading Node",
+                FontSize = 18,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(0, 0, 0, 10)
+            });
+            DetailsPanel.Children.Add(new TextBlock { Text = "This is a placeholder node indicating that child items are being loaded." });
+            DetailsPanel.Children.Add(new TextBlock { Text = "Please expand the parent node to load actual children." });
         }
 
         private async Task LoadHierarchy()
@@ -292,11 +397,11 @@ namespace Koru1000.ManagerUI
             {
                 if (_hierarchyService != null)
                 {
-                    StatusText.Text = "Hiyerarşi yükleniyor...";
+                    StatusText.Text = "Loading hierarchy (lazy loading)...";
+                    Console.WriteLine("=== LAZY HIERARCHY LOADING START ===");
 
-                    Console.WriteLine("=== HIERARCHY LOADING START ===");
                     var hierarchy = await _hierarchyService.BuildHierarchyAsync();
-                    Console.WriteLine($"=== HIERARCHY LOADED: {hierarchy?.Count ?? 0} items ===");
+                    Console.WriteLine($"=== HIERARCHY LOADED: {hierarchy?.Count ?? 0} root items ===");
 
                     // UI Thread'de güncelleyelim
                     Dispatcher.Invoke(() =>
@@ -311,31 +416,87 @@ namespace Koru1000.ManagerUI
 
                             Console.WriteLine($"TreeView ItemsSource set with {hierarchy.Count} items");
 
-                            StatusText.Text = $"Hiyerarşi yüklendi - {hierarchy.Count} öğe";
+                            StatusText.Text = $"Hierarchy loaded - {hierarchy.Count} root items (expand nodes to load children)";
 
                             // TreeView'ı refresh et
                             HierarchyTreeView.UpdateLayout();
+
+                            // Hierarchy stats güncelle
+                            UpdateHierarchyStats();
                         }
                         else
                         {
-                            StatusText.Text = "Hiyerarşi boş - veri bulunamadı";
+                            StatusText.Text = "No hierarchy data found";
                         }
                     });
                 }
                 else
                 {
-                    StatusText.Text = "HierarchyService null!";
+                    StatusText.Text = "HierarchyService is null!";
                 }
             }
             catch (Exception ex)
             {
-                StatusText.Text = $"Hiyerarşi yüklenemedi: {ex.Message}";
+                StatusText.Text = $"Failed to load hierarchy: {ex.Message}";
                 Console.WriteLine($"HIERARCHY ERROR: {ex.Message}");
-
-                MessageBox.Show($"Hiyerarşi yükleme hatası: {ex.Message}", "Hata",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                throw;
             }
         }
+
+        private void UpdateHierarchyStats()
+        {
+            try
+            {
+                if (HierarchyTreeView.ItemsSource is ObservableCollection<TreeNodeBase> rootNodes)
+                {
+                    int totalNodes = CountAllNodes(rootNodes);
+                    int loadedNodes = CountLoadedNodes(rootNodes);
+
+                    if (HierarchyStatsText != null)
+                    {
+                        HierarchyStatsText.Text = $"🌳 Hierarchy Statistics:\n" +
+                                                 $"   • Root Nodes: {rootNodes.Count}\n" +
+                                                 $"   • Total Visible Nodes: {totalNodes}\n" +
+                                                 $"   • Loaded Node Types: {loadedNodes}\n" +
+                                                 $"   • Lazy Loading: Active\n" +
+                                                 $"   • Last Update: {DateTime.Now:HH:mm:ss}";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating hierarchy stats: {ex.Message}");
+            }
+        }
+
+        private int CountAllNodes(IEnumerable<TreeNodeBase> nodes)
+        {
+            int count = 0;
+            foreach (var node in nodes)
+            {
+                count++;
+                if (node.Children.Any() && !(node.Children.First() is DummyNode))
+                {
+                    count += CountAllNodes(node.Children);
+                }
+            }
+            return count;
+        }
+
+        private int CountLoadedNodes(IEnumerable<TreeNodeBase> nodes)
+        {
+            int count = 0;
+            foreach (var node in nodes)
+            {
+                if (node.IsChildrenLoaded) count++;
+                if (node.Children.Any() && !(node.Children.First() is DummyNode))
+                {
+                    count += CountLoadedNodes(node.Children);
+                }
+            }
+            return count;
+        }
+
         private void TestHierarchyButton_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -345,51 +506,95 @@ namespace Koru1000.ManagerUI
                 // Manuel test node'ları oluştur
                 var testNodes = new ObservableCollection<TreeNodeBase>();
 
+                var testDriverType = new DriverNode
+                {
+                    Id = 999,
+                    Name = "Test Driver Type",
+                    DisplayName = "🔌 Test Driver Type",
+                    DriverTypeName = "Test",
+                    IsExpanded = false,
+                    IsChildrenLoaded = false
+                };
+
+                var testDriver = new DriverNode
+                {
+                    Id = 998,
+                    Name = "Test Driver",
+                    DisplayName = "🔧 Test Driver",
+                    DriverTypeName = null,
+                    Parent = testDriverType,
+                    IsExpanded = false,
+                    IsChildrenLoaded = false
+                };
+
                 var testChannel = new ChannelNode
                 {
-                    Id = 1,
+                    Id = 997,
                     Name = "Test Channel",
-                    DisplayName = "Test Channel Manual",
-                    Icon = "📂",
-                    IsExpanded = true
+                    DisplayName = "📂 Test Channel",
+                    ChannelTypeId = 1,
+                    ChannelTypeName = "TestChannelType",
+                    Parent = testDriver,
+                    IsExpanded = false,
+                    IsChildrenLoaded = false
                 };
 
                 var testDevice = new DeviceNode
                 {
-                    Id = 1,
+                    Id = 996,
                     Name = "Test Device",
-                    DisplayName = "Test Device Manual",
-                    Icon = "🔧",
+                    DisplayName = "🔧 Test Device [Active]",
+                    DeviceTypeId = 1,
+                    DeviceTypeName = "TestDeviceType",
+                    StatusCode = 11,
+                    StatusDescription = "Active",
                     Parent = testChannel,
-                    IsExpanded = true
+                    IsExpanded = false,
+                    IsChildrenLoaded = false
                 };
 
                 var testTag = new TagNode
                 {
-                    Id = 1,
+                    Id = 995,
                     Name = "Test Tag",
-                    DisplayName = "Test Tag Manual",
-                    Icon = "🏷️",
+                    DisplayName = "🏷️ Test Tag [Float] = 123.45",
+                    TagAddress = "DB1.DBD0",
+                    DataType = "Float",
+                    CurrentValue = 123.45,
+                    Quality = "Good",
+                    IsWritable = true,
                     Parent = testDevice
                 };
 
+                // Dummy child'lar ekle
+                testDriverType.AddDummyChild();
+                testDriver.AddDummyChild();
+                testChannel.AddDummyChild();
+                testDevice.AddDummyChild();
+
+                // Hierarchy'yi oluştur
                 testDevice.Children.Add(testTag);
                 testChannel.Children.Add(testDevice);
-                testNodes.Add(testChannel);
+                testDriver.Children.Add(testChannel);
+                testDriverType.Children.Add(testDriver);
+                testNodes.Add(testDriverType);
 
+                // TreeView'a set et
                 HierarchyTreeView.ItemsSource = testNodes;
 
                 Console.WriteLine($"Manual test nodes added: {testNodes.Count}");
-                MessageBox.Show($"Test node'ları eklendi! TreeView'da görünüyor mu?", "Test",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
+                StatusText.Text = "Test hierarchy loaded - expand nodes to see structure";
+                MessageBox.Show($"Test hierarchy loaded!\n\nYou can now expand the nodes to see the structure.\nThe dummy loading mechanism is also working.",
+                    "Test Complete", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Test error: {ex.Message}");
-                MessageBox.Show($"Test hatası: {ex.Message}", "Hata",
+                MessageBox.Show($"Test error: {ex.Message}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
+
         #endregion
 
         #region Bağlantı ve Veri Yükleme
@@ -405,7 +610,7 @@ namespace Koru1000.ManagerUI
 
             try
             {
-                StatusText.Text = "Bağlantı test ediliyor...";
+                StatusText.Text = "Testing connections...";
                 ConnectButton.IsEnabled = false;
 
                 bool exchangerConnected = await _dbManager.TestExchangerConnectionAsync();
@@ -414,38 +619,38 @@ namespace Koru1000.ManagerUI
                 if (exchangerConnected && kbinConnected)
                 {
                     ConnectionStatus.Fill = Brushes.Green;
-                    ConnectionText.Text = "Bağlı";
-                    StatusText.Text = "Veritabanlarına başarıyla bağlanıldı";
+                    ConnectionText.Text = "Connected";
+                    StatusText.Text = "Successfully connected to databases";
                     await LoadAllData();
                 }
                 else if (exchangerConnected && !kbinConnected)
                 {
                     ConnectionStatus.Fill = Brushes.Orange;
-                    ConnectionText.Text = "Kısmi Bağlı";
-                    StatusText.Text = "Exchanger bağlı, Kbin bağlantısı başarısız";
+                    ConnectionText.Text = "Partial";
+                    StatusText.Text = "Exchanger connected, Kbin connection failed";
                     await LoadExchangerData();
                 }
                 else if (!exchangerConnected && kbinConnected)
                 {
                     ConnectionStatus.Fill = Brushes.Orange;
-                    ConnectionText.Text = "Kısmi Bağlı";
-                    StatusText.Text = "Kbin bağlı, Exchanger bağlantısı başarısız";
+                    ConnectionText.Text = "Partial";
+                    StatusText.Text = "Kbin connected, Exchanger connection failed";
                     await LoadKbinData();
                 }
                 else
                 {
                     ConnectionStatus.Fill = Brushes.Red;
-                    ConnectionText.Text = "Bağlı Değil";
-                    StatusText.Text = "Tüm veritabanı bağlantıları başarısız";
+                    ConnectionText.Text = "Disconnected";
+                    StatusText.Text = "All database connections failed";
                 }
             }
             catch (Exception ex)
             {
                 ConnectionStatus.Fill = Brushes.Red;
-                ConnectionText.Text = "Bağlı Değil";
-                MessageBox.Show($"Bağlantı hatası: {ex.Message}", "Hata",
+                ConnectionText.Text = "Disconnected";
+                MessageBox.Show($"Connection error: {ex.Message}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
-                StatusText.Text = "Bağlantı hatası";
+                StatusText.Text = "Connection error";
             }
             finally
             {
@@ -457,7 +662,7 @@ namespace Koru1000.ManagerUI
         {
             if (_dbManager == null)
             {
-                MessageBox.Show("Önce veritabanı bağlantısını kurun!", "Uyarı",
+                MessageBox.Show("Please establish database connection first!", "Warning",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
@@ -474,7 +679,7 @@ namespace Koru1000.ManagerUI
         {
             try
             {
-                StatusText.Text = "Tüm veriler yükleniyor...";
+                StatusText.Text = "Loading all data...";
                 RefreshButton.IsEnabled = false;
 
                 var tasks = new List<Task>
@@ -487,13 +692,13 @@ namespace Koru1000.ManagerUI
 
                 await Task.WhenAll(tasks);
 
-                StatusText.Text = "Tüm veriler başarıyla yüklendi";
+                StatusText.Text = "All data loaded successfully";
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Veri yükleme hatası: {ex.Message}", "Hata",
+                MessageBox.Show($"Data loading error: {ex.Message}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
-                StatusText.Text = "Veri yükleme başarısız";
+                StatusText.Text = "Data loading failed";
             }
             finally
             {
@@ -525,7 +730,7 @@ namespace Koru1000.ManagerUI
             }
             catch (Exception ex)
             {
-                StatusText.Text = $"Exchanger verileri yüklenemedi: {ex.Message}";
+                StatusText.Text = $"Exchanger data loading failed: {ex.Message}";
             }
         }
 
@@ -557,7 +762,7 @@ namespace Koru1000.ManagerUI
             }
             catch (Exception ex)
             {
-                StatusText.Text = $"Tag verileri yüklenemedi: {ex.Message}";
+                StatusText.Text = $"Tag data loading failed: {ex.Message}";
             }
         }
 
@@ -572,27 +777,30 @@ namespace Koru1000.ManagerUI
                 var tagYazCount = await _tagRepo.GetTagYazCountAsync();
                 var statusCounts = await _channelDeviceRepo.GetStatusCodeCountsAsync();
 
-                TotalDevicesText.Text = $"📊 Toplam Cihaz Sayısı: {deviceCount}";
+                TotalDevicesText.Text = $"📊 Total Device Count: {deviceCount:N0}";
 
-                string statusStats = "📈 Status Kod Dağılımı:\n";
+                string statusStats = "📈 Status Code Distribution:\n";
                 foreach (var stat in statusCounts)
                 {
-                    statusStats += $"   • Status {stat.Key}: {stat.Value} cihaz\n";
+                    statusStats += $"   • Status {stat.Key}: {stat.Value:N0} devices\n";
                 }
                 StatusStatsText.Text = statusStats;
 
-                TagStatsText.Text = $"🏷️ Tag İstatistikleri:\n" +
-                                   $"   • Okunan Tag Sayısı: {tagOkuCount:N0}\n" +
-                                   $"   • Yazılacak Tag Sayısı: {tagYazCount:N0}";
+                TagStatsText.Text = $"🏷️ Tag Statistics:\n" +
+                                   $"   • Read Tags: {tagOkuCount:N0}\n" +
+                                   $"   • Write Tags: {tagYazCount:N0}";
 
-                SystemStatsText.Text = $"⚙️ Sistem İstatistikleri:\n" +
-                                      $"   • Channel Type Sayısı: {channelTypeCount}\n" +
-                                      $"   • Device Type Sayısı: {deviceTypeCount}\n" +
-                                      $"   • Son Güncelleme: {DateTime.Now:HH:mm:ss}";
+                SystemStatsText.Text = $"⚙️ System Statistics:\n" +
+                                      $"   • Channel Types: {channelTypeCount:N0}\n" +
+                                      $"   • Device Types: {deviceTypeCount:N0}\n" +
+                                      $"   • Last Update: {DateTime.Now:HH:mm:ss}";
+
+                // Hierarchy stats'ı da güncelle
+                UpdateHierarchyStats();
             }
             catch (Exception ex)
             {
-                StatusText.Text = $"İstatistikler yüklenemedi: {ex.Message}";
+                StatusText.Text = $"Statistics loading failed: {ex.Message}";
             }
         }
         #endregion
