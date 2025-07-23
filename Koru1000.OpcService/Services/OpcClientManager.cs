@@ -208,8 +208,12 @@ namespace Koru1000.OpcService.Services
                 };
 
                 // OpcDriverManager oluştur
-                var driverManager = new OpcDriverManager(driverId, driverInfo, _dbManager, _config.Limits,
-                    _loggerFactory.CreateLogger<OpcDriverManager>());
+                var driverManager = new OpcDriverManager(
+    driverId,
+    driverInfo,
+    _dbManager,
+    _config.Limits,
+    _loggerFactory.CreateLogger<OpcDriverManager>() as ILogger);
 
                 driverManager.DataChanged += OnDriverDataChanged;
                 driverManager.StatusChanged += OnDriverStatusChanged;
