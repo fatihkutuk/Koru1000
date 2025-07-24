@@ -1,66 +1,74 @@
+ï»¿// Koru1000.OpcService/Worker.cs
 using Koru1000.OpcService.Services;
 
-namespace Koru1000.OpcService;
-
-public class Worker : BackgroundService
+namespace Koru1000.OpcService
 {
-    private readonly ILogger<Worker> _logger;
-    private readonly IOpcClientManager _opcClientManager;
-    private readonly IOpcDataProcessor _dataProcessor;
-
-    public Worker(
-        ILogger<Worker> logger,
-        IOpcClientManager opcClientManager,
-        IOpcDataProcessor dataProcessor)
+    public class Worker : BackgroundService
     {
-        _logger = logger;
-        _opcClientManager = opcClientManager;
-        _dataProcessor = dataProcessor;
-    }
+        private readonly ILogger<Worker> _logger;
+        private readonly IOpcClientManager _opcClientManager;
+        private readonly IOpcDataProcessor _opcDataProcessor;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        try
+        public Worker(
+            ILogger<Worker> logger,
+            IOpcClientManager opcClientManager,
+            IOpcDataProcessor opcDataProcessor)
         {
-            _logger.LogInformation("Koru1000 OPC Service baþlatýlýyor...");
+            _logger = logger;
+            _opcClientManager = opcClientManager;
+            _opcDataProcessor = opcDataProcessor;
+        }
 
-            // OPC Client Manager'ý baþlat
-            await _opcClientManager.StartAsync();
-
-            // Data processor'ý baþlat
-            await _dataProcessor.StartAsync();
-
-            _logger.LogInformation("Koru1000 OPC Service baþarýyla baþlatýldý.");
-
-            // Service çalýþýrken bekle
-            while (!stoppingToken.IsCancellationRequested)
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            try
             {
-                await Task.Delay(1000, stoppingToken);
+                _logger.LogInformation("ðŸš€ Koru1000 OPC Service baÅŸlatÄ±lÄ±yor...");
+
+                // Data Processor'Ä± baÅŸlat
+                await _opcDataProcessor.StartAsync();
+
+                // OPC Client Manager'Ä± baÅŸlat
+                await _opcClientManager.StartAsync();
+
+                _logger.LogInformation("âœ… Koru1000 OPC Service baÅŸarÄ±yla baÅŸlatÄ±ldÄ±!");
+
+                // Service Ã§alÄ±ÅŸmaya devam etsin
+                while (!stoppingToken.IsCancellationRequested)
+                {
+                    // Her 30 saniyede status kontrol et
+                    var statuses = await _opcClientManager.GetServiceStatusAsync();
+
+                    var connectedCount = statuses.Count(s => s.ConnectionStatus == Core.Models.OpcModels.OpcConnectionStatus.Connected);
+                    _logger.LogInformation($"ðŸ“Š OPC Service Status: {connectedCount}/{statuses.Count} drivers connected");
+
+                    await Task.Delay(30000, stoppingToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ðŸ’¥ Fatal error in OPC Service");
+                throw;
             }
         }
-        catch (Exception ex)
+
+        public override async Task StopAsync(CancellationToken cancellationToken)
         {
-            _logger.LogError(ex, "OPC Service çalýþýrken hata oluþtu");
-            throw;
+            try
+            {
+                _logger.LogInformation("ðŸ›‘ Koru1000 OPC Service durduruluyor...");
+
+                await _opcClientManager.StopAsync();
+                await _opcDataProcessor.StopAsync();
+
+                _logger.LogInformation("âœ… Koru1000 OPC Service durduruldu");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ðŸ’¥ Error stopping OPC Service");
+            }
+
+            await base.StopAsync(cancellationToken);
         }
-    }
-
-    public override async Task StopAsync(CancellationToken cancellationToken)
-    {
-        _logger.LogInformation("Koru1000 OPC Service durduruluyor...");
-
-        try
-        {
-            await _dataProcessor.StopAsync();
-            await _opcClientManager.StopAsync();
-
-            _logger.LogInformation("Koru1000 OPC Service baþarýyla durduruldu.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "OPC Service durdurulurken hata");
-        }
-
-        await base.StopAsync(cancellationToken);
     }
 }

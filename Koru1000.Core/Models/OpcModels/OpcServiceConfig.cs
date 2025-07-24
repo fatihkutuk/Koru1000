@@ -13,14 +13,14 @@
 
     public class ClientLimits
     {
-        public int MaxTagsPerSubscription { get; set; } = 20000;
+        public int MaxTagsPerSubscription { get; set; } = 5000; // 20000'den düşürdük
         public int MaxChannelsPerSession { get; set; } = 50;
         public int MaxDevicesPerSession { get; set; } = 50;
         public int MaxSubscriptionsPerSession { get; set; } = 10;
-        public int PublishingIntervalMs { get; set; } = 1000;
-        public int MaxNotificationsPerPublish { get; set; } = 10000;
-        public int SessionTimeoutMs { get; set; } = 300000; // 5 minutes
-        public int ReconnectDelayMs { get; set; } = 5000;
+        public int PublishingIntervalMs { get; set; } = 2000; // 1000'den artırdık
+        public int MaxNotificationsPerPublish { get; set; } = 1000; // 10000'den düşürdük
+        public int SessionTimeoutMs { get; set; } = 600000; // 5 dakikadan 10 dakikaya
+        public int ReconnectDelayMs { get; set; } = 10000; // 5 saniyeden 10 saniyeye
         public int MaxReconnectAttempts { get; set; } = 5;
     }
 

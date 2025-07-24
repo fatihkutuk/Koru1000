@@ -1,4 +1,5 @@
-﻿using Koru1000.Core.Models.OpcModels;
+﻿// Koru1000.OpcService/Services/OpcClientManager.cs
+using Koru1000.Core.Models.OpcModels;
 using Koru1000.OpcService.Clients;
 using System.Collections.Concurrent;
 using System.Text.Json;
@@ -11,7 +12,7 @@ namespace Koru1000.OpcService.Services
         private readonly OpcServiceConfig _config;
         private readonly ILogger<OpcClientManager> _logger;
         private readonly ILoggerFactory _loggerFactory;
-        private readonly ConcurrentDictionary<int, OpcDriverManager> _driverManagers; // DEĞİŞTİ
+        private readonly ConcurrentDictionary<int, OpcDriverManager> _driverManagers;
         private readonly Timer _statusTimer;
         private readonly IOpcDataProcessor _dataProcessor;
         private bool _isRunning;
@@ -31,7 +32,7 @@ namespace Koru1000.OpcService.Services
             _dataProcessor = dataProcessor;
             _logger = logger;
             _loggerFactory = loggerFactory;
-            _driverManagers = new ConcurrentDictionary<int, OpcDriverManager>(); // DEĞİŞTİ
+            _driverManagers = new ConcurrentDictionary<int, OpcDriverManager>();
 
             _statusTimer = new Timer(CheckConnectionStatus, null,
                 TimeSpan.FromSeconds(_config.StatusCheckIntervalSeconds),
@@ -42,16 +43,16 @@ namespace Koru1000.OpcService.Services
         {
             try
             {
-                _logger.LogInformation("OPC Client Manager başlatılıyor...");
+                _logger.LogInformation("🚀 OPC Client Manager başlatılıyor...");
                 _isRunning = true;
 
                 await LoadKepServerExDriversAsync();
 
-                _logger.LogInformation($"OPC Client Manager başlatıldı. {_driverManagers.Count} driver manager aktif.");
+                _logger.LogInformation($"✅ OPC Client Manager başlatıldı. {_driverManagers.Count} driver manager aktif.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "OPC Client Manager başlatılamadı");
+                _logger.LogError(ex, "💥 OPC Client Manager başlatılamadı");
                 throw;
             }
         }
@@ -60,7 +61,7 @@ namespace Koru1000.OpcService.Services
         {
             try
             {
-                _logger.LogInformation("OPC Client Manager durduruluyor...");
+                _logger.LogInformation("🛑 OPC Client Manager durduruluyor...");
                 _isRunning = false;
 
                 _statusTimer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -74,11 +75,11 @@ namespace Koru1000.OpcService.Services
                 }
                 _driverManagers.Clear();
 
-                _logger.LogInformation("OPC Client Manager durduruldu.");
+                _logger.LogInformation("✅ OPC Client Manager durduruldu.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "OPC Client Manager durdurulamadı");
+                _logger.LogError(ex, "💥 OPC Client Manager durdurulamadı");
             }
         }
 
@@ -95,16 +96,22 @@ namespace Koru1000.OpcService.Services
                     ORDER BY d.id";
 
                 var drivers = await _dbManager.QueryExchangerAsync<dynamic>(sql);
-                _logger.LogInformation($"Found {drivers.Count()} KEPSERVEREX drivers to load");
+                _logger.LogInformation($"📋 Found {drivers.Count()} KEPSERVEREX drivers to load");
+
+                // PARALEL DRIVER BAŞLATMA
+                var driverTasks = new List<Task>();
 
                 foreach (var driver in drivers)
                 {
-                    await CreateDriverManagerAsync(driver);
+                    driverTasks.Add(CreateDriverManagerAsync(driver));
                 }
+
+                // TÜM DRIVER'LARIN BAŞLAMASINI BEKLE
+                await Task.WhenAll(driverTasks);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "KEPSERVEREX driver'ları yüklenirken hata");
+                _logger.LogError(ex, "💥 KEPSERVEREX driver'ları yüklenirken hata");
                 throw;
             }
         }
@@ -116,7 +123,6 @@ namespace Koru1000.OpcService.Services
                 int driverId = (int)driverData.id;
                 string driverName = driverData.name;
 
-                // Custom settings parse et
                 var customSettings = new Dictionary<string, object>();
                 KepConnectionSettings connectionSettings = new();
                 KepSecuritySettings securitySettings = new();
@@ -135,7 +141,6 @@ namespace Koru1000.OpcService.Services
                         customSettings = JsonSerializer.Deserialize<Dictionary<string, object>>(
                             driverData.customSettings.ToString()) ?? new Dictionary<string, object>();
 
-                        // Parse settings
                         if (root.TryGetProperty("namespace", out JsonElement ns))
                             namespace_ = ns.GetString() ?? "2";
 
@@ -155,6 +160,8 @@ namespace Koru1000.OpcService.Services
                                 connectionSettings.SessionTimeout = st.GetInt32();
                             if (cs.TryGetProperty("publishingInterval", out JsonElement pi))
                                 connectionSettings.PublishingInterval = pi.GetInt32();
+                            if (cs.TryGetProperty("maxTagsPerSubscription", out JsonElement mts))
+                                connectionSettings.MaxTagsPerSubscription = mts.GetInt32();
                         }
 
                         if (root.TryGetProperty("security", out JsonElement sec))
@@ -178,14 +185,14 @@ namespace Koru1000.OpcService.Services
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, $"Custom settings parse edilemedi for driver {driverName}");
+                    _logger.LogWarning(ex, $"⚠️ Custom settings parse edilemedi for driver {driverName}");
                 }
 
                 string endpointUrl = customSettings.GetValueOrDefault("EndpointUrl", "")?.ToString();
                 if (string.IsNullOrEmpty(endpointUrl))
                 {
                     endpointUrl = "opc.tcp://localhost:49320";
-                    _logger.LogWarning($"Driver {driverName} için EndpointUrl bulunamadı, default kullanılıyor: {endpointUrl}");
+                    _logger.LogWarning($"⚠️ Driver {driverName} için EndpointUrl bulunamadı, default kullanılıyor: {endpointUrl}");
                 }
 
                 var channelTypeIds = await GetDriverChannelTypeIdsAsync(driverId);
@@ -207,7 +214,6 @@ namespace Koru1000.OpcService.Services
                     Credentials = credentials
                 };
 
-                // OpcDriverManager oluştur
                 var driverManager = new OpcDriverManager(
                     driverId,
                     driverInfo,
@@ -222,11 +228,11 @@ namespace Koru1000.OpcService.Services
                 await driverManager.StartAsync();
 
                 _driverManagers.TryAdd(driverId, driverManager);
-                _logger.LogInformation($"Driver manager oluşturuldu: {driverName} [{endpointUrl}]");
+                _logger.LogInformation($"✅ Driver manager oluşturuldu: {driverName} [{endpointUrl}]");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Driver manager oluşturulamadı: {driverData.name}");
+                _logger.LogError(ex, $"💥 Driver manager oluşturulamadı: {driverData.name}");
             }
         }
 
@@ -244,7 +250,7 @@ namespace Koru1000.OpcService.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Driver {driverId} için channel type ID'leri alınamadı");
+                _logger.LogError(ex, $"💥 Driver {driverId} için channel type ID'leri alınamadı");
                 return new List<int>();
             }
         }
@@ -261,7 +267,7 @@ namespace Koru1000.OpcService.Services
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, $"Data processing hatası - Driver: {e.DriverName}");
+                        _logger.LogError(ex, $"💥 Data processing hatası - Driver: {e.DriverName}");
                     }
                 });
 
@@ -269,7 +275,7 @@ namespace Koru1000.OpcService.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Driver data changed event işlenirken hata: {e.DriverName}");
+                _logger.LogError(ex, $"💥 Driver data changed event işlenirken hata: {e.DriverName}");
             }
         }
 
@@ -285,7 +291,7 @@ namespace Koru1000.OpcService.Services
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, $"Status processing hatası - Driver: {e.DriverName}");
+                        _logger.LogError(ex, $"💥 Status processing hatası - Driver: {e.DriverName}");
                     }
                 });
 
@@ -293,7 +299,7 @@ namespace Koru1000.OpcService.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Driver status changed event işlenirken hata: {e.DriverName}");
+                _logger.LogError(ex, $"💥 Driver status changed event işlenirken hata: {e.DriverName}");
             }
         }
 
@@ -307,12 +313,11 @@ namespace Koru1000.OpcService.Services
                 {
                     try
                     {
-                        // Manager'ın status'unu kontrol et
                         await Task.Delay(100);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, $"Driver manager status kontrolünde hata");
+                        _logger.LogError(ex, $"💥 Driver manager status kontrolünde hata");
                     }
                 });
             }
@@ -343,7 +348,7 @@ namespace Koru1000.OpcService.Services
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Driver manager dispose hatası");
+                    _logger.LogError(ex, $"💥 Driver manager dispose hatası");
                 }
             }
 

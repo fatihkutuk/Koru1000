@@ -11,7 +11,7 @@ namespace Koru1000.OpcService.Clients
         private readonly Koru1000.DatabaseManager.DatabaseManager _dbManager;
         private readonly ClientLimits _limits;
         private readonly ILogger<OpcDriverManager> _logger;
-        private readonly ILoggerFactory _loggerFactory; // Bunu ekleyin
+        private readonly ILoggerFactory _loggerFactory;
 
         private readonly ConcurrentDictionary<int, OpcClient> _clients;
         private readonly Timer _statusTimer;
@@ -29,14 +29,14 @@ namespace Koru1000.OpcService.Clients
             Koru1000.DatabaseManager.DatabaseManager dbManager,
             ClientLimits limits,
             ILogger<OpcDriverManager> logger,
-            ILoggerFactory loggerFactory) // Bunu ekleyin
+            ILoggerFactory loggerFactory)
         {
             _driverId = driverId;
             _driverInfo = driverInfo;
             _dbManager = dbManager;
             _limits = limits;
             _logger = logger;
-            _loggerFactory = loggerFactory; // Bunu ekleyin
+            _loggerFactory = loggerFactory;
 
             _clients = new ConcurrentDictionary<int, OpcClient>();
             _statusTimer = new Timer(StatusCheck, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
@@ -46,37 +46,34 @@ namespace Koru1000.OpcService.Clients
         {
             try
             {
-                _logger.LogInformation($"=== STARTING DRIVER MANAGER: {_driverInfo.DriverName} ===");
+                _logger.LogInformation($"🚀 === STARTING DRIVER MANAGER: {_driverInfo.DriverName} ===");
                 _isRunning = true;
 
-                // Tüm tag'leri yükle
                 var allTags = await LoadDriverTagsAsync();
                 if (!allTags.Any())
                 {
-                    _logger.LogWarning($"No tags found for driver: {_driverInfo.DriverName}");
+                    _logger.LogWarning($"⚠️ No tags found for driver: {_driverInfo.DriverName}");
                     return;
                 }
 
-                _logger.LogInformation($"Found {allTags.Count} total tags for driver {_driverInfo.DriverName}");
+                _logger.LogInformation($"📊 Found {allTags.Count} total tags for driver {_driverInfo.DriverName}");
 
-                // Tag'leri client'lara böl
+                // 20000'ERLİ CLIENT'LAR OLUŞTUR
+                int maxTagsPerClient = 20000;
+
                 var clientGroups = allTags
                     .Select((tag, index) => new { tag, index })
-                    .GroupBy(x => x.index / _limits.MaxTagsPerSubscription)
+                    .GroupBy(x => x.index / maxTagsPerClient)
                     .Select(g => g.Select(x => x.tag).ToList())
                     .ToList();
 
-                _logger.LogInformation($"Creating {clientGroups.Count} clients for {allTags.Count} tags");
+                _logger.LogInformation($"📋 Creating {clientGroups.Count} clients with max {maxTagsPerClient} tags each");
 
-                // Her grup için bir client oluştur
-                var clientTasks = new List<Task>();
+                // SERİ OLARAK CLIENT OLUŞTUR (timeout olmasın diye)
                 for (int i = 0; i < clientGroups.Count; i++)
                 {
                     var clientId = i + 1;
                     var tags = clientGroups[i];
-
-                    // Her OpcClient için ayrı logger oluştur
-                    var clientLogger = _loggerFactory.CreateLogger<OpcClient>();
 
                     var client = new OpcClient(
                         clientId,
@@ -84,28 +81,41 @@ namespace Koru1000.OpcService.Clients
                         tags,
                         _dbManager,
                         _limits,
-                        clientLogger); // Artık doğru tip
+                        _loggerFactory.CreateLogger<OpcClient>());
 
-                    // Event'leri bağla
                     client.DataChanged += OnClientDataChanged;
                     client.StatusChanged += OnClientStatusChanged;
 
                     _clients.TryAdd(clientId, client);
 
-                    // Client'ı başlat (paralel)
-                    clientTasks.Add(client.StartAsync());
+                    // SERİ BAŞLAT
+                    await client.StartAsync();
 
-                    _logger.LogInformation($"Created client {clientId} with {tags.Count} tags");
+                    _logger.LogInformation($"✅ Started client {clientId} with {tags.Count} tags");
+
+                    // CLIENT'LAR ARASINDA 3 SANİYE BEKLE
+                    await Task.Delay(3000);
                 }
 
-                // Tüm client'ların başlamasını bekle
-                await Task.WhenAll(clientTasks);
-
-                _logger.LogInformation($"=== DRIVER MANAGER STARTED: {_driverInfo.DriverName} with {_clients.Count} clients ===");
+                _logger.LogInformation($"✅ === DRIVER MANAGER STARTED: {_driverInfo.DriverName} with {_clients.Count} clients ===");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Failed to start driver manager: {_driverInfo.DriverName}");
+                _logger.LogError(ex, $"💥 Failed to start driver manager: {_driverInfo.DriverName}");
+                throw;
+            }
+        }
+
+        private async Task StartClientAsync(OpcClient client, int clientId, int tagCount)
+        {
+            try
+            {
+                await client.StartAsync();
+                _logger.LogInformation($"✅ Started client {clientId} with {tagCount} tags");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"💥 Failed to start client {clientId}");
                 throw;
             }
         }
@@ -114,27 +124,25 @@ namespace Koru1000.OpcService.Clients
         {
             try
             {
-                _logger.LogInformation($"=== STOPPING DRIVER MANAGER: {_driverInfo.DriverName} ===");
+                _logger.LogInformation($"🛑 === STOPPING DRIVER MANAGER: {_driverInfo.DriverName} ===");
                 _isRunning = false;
 
                 _statusTimer.Change(Timeout.Infinite, Timeout.Infinite);
 
-                // Tüm client'ları durdur
                 var stopTasks = _clients.Values.Select(client => client.StopAsync());
                 await Task.WhenAll(stopTasks);
 
-                // Client'ları temizle
                 foreach (var client in _clients.Values)
                 {
                     client.Dispose();
                 }
                 _clients.Clear();
 
-                _logger.LogInformation($"=== DRIVER MANAGER STOPPED: {_driverInfo.DriverName} ===");
+                _logger.LogInformation($"✅ === DRIVER MANAGER STOPPED: {_driverInfo.DriverName} ===");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error stopping driver manager: {_driverInfo.DriverName}");
+                _logger.LogError(ex, $"💥 Error stopping driver manager: {_driverInfo.DriverName}");
             }
         }
 
@@ -142,50 +150,48 @@ namespace Koru1000.OpcService.Clients
         {
             try
             {
-                // Aynı SQL sorgusu ama tüm tag'leri al
+                _logger.LogInformation($"📋 === LOADING TAGS FOR DRIVER {_driverId} ===");
+
+                // BASİT SQL - cd.driverId ile direkt çek
                 const string sql = @"
-                                        SELECT 
-                        dtt.id as TagId,
-                        cd.id as DeviceId,
-                        cd.channelName as ChannelName,
-                        CONCAT('Device_', cd.id) as DeviceName,
-                        JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""common.ALLTYPES_NAME""')) as TagName,
-                        JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""servermain.TAG_ADDRESS""')) as TagAddress,
-                        JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""servermain.TAG_DATA_TYPE""')) as DataType,
-                        JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""servermain.TAG_READ_WRITE_ACCESS""')) as IsWritable
-                    FROM channeldevice cd
-                    INNER JOIN devicetype dt ON cd.deviceTypeId = dt.id
-                    INNER JOIN devicetypetag dtt ON dtt.deviceTypeId = dt.id
-                    INNER JOIN driver_channeltype_relation dcr ON dt.ChannelTypeId = dcr.channelTypeId
-                    WHERE cd.driverId = @DriverId AND cd.statusCode IN (11,31,41,61)
-                    
-                    UNION ALL
-                    
-                    SELECT 
-                        dit.id as TagId,
-                        cd.id as DeviceId,
-                        cd.channelName as ChannelName,
-                        CONCAT('Device_', cd.id) as DeviceName,
-                        JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""common.ALLTYPES_NAME""')) as TagName,
-                        JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""servermain.TAG_ADDRESS""')) as TagAddress,
-                        JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""servermain.TAG_DATA_TYPE""')) as DataType,
-                        JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""servermain.TAG_READ_WRITE_ACCESS""')) as IsWritable
-                    FROM channeldevice cd
-                    INNER JOIN devicetype dt ON cd.deviceTypeId = dt.id
-                    INNER JOIN deviceindividualtag dit ON dit.channelDeviceId = cd.id
-                    INNER JOIN driver_channeltype_relation dcr ON dt.ChannelTypeId = dcr.channelTypeId
-                    WHERE cd.driverId = @DriverId AND cd.statusCode IN (11,31,41,61)
-                    ORDER BY DeviceId, TagName";
+            SELECT 
+                dtt.id as TagId,
+                cd.id as DeviceId,
+                cd.channelName as ChannelName,
+                CONCAT('Device_', cd.id) as DeviceName,
+                JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""common.ALLTYPES_NAME""')) as TagName,
+                JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""servermain.TAG_ADDRESS""')) as TagAddress,
+                JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""servermain.TAG_DATA_TYPE""')) as DataType,
+                JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""servermain.TAG_READ_WRITE_ACCESS""')) as IsWritable
+            FROM channeldevice cd
+            INNER JOIN devicetype dt ON cd.deviceTypeId = dt.id
+            INNER JOIN devicetypetag dtt ON dtt.deviceTypeId = dt.id
+            WHERE cd.driverId = @DriverId AND cd.statusCode IN (11,31,41,61)
+            
+            UNION ALL
+            
+            SELECT 
+                dit.id as TagId,
+                cd.id as DeviceId,
+                cd.channelName as ChannelName,
+                CONCAT('Device_', cd.id) as DeviceName,
+                JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""common.ALLTYPES_NAME""')) as TagName,
+                JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""servermain.TAG_ADDRESS""')) as TagAddress,
+                JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""servermain.TAG_DATA_TYPE""')) as DataType,
+                JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""servermain.TAG_READ_WRITE_ACCESS""')) as IsWritable
+            FROM channeldevice cd
+            INNER JOIN deviceindividualtag dit ON dit.channelDeviceId = cd.id
+            WHERE cd.driverId = @DriverId AND cd.statusCode IN (11,31,41,61)
+            ORDER BY DeviceId, TagName";
 
                 var results = await _dbManager.QueryExchangerAsync<dynamic>(sql, new { DriverId = _driverId });
 
                 var tags = new List<OpcTagInfo>();
                 foreach (var result in results)
                 {
-                    if (string.IsNullOrEmpty(result.TagName) || string.IsNullOrEmpty(result.TagAddress))
+                    if (string.IsNullOrEmpty(result.TagName))
                         continue;
 
-                    // NodeID formatı: ns=2;s=ChannelName.DeviceName.TagName
                     string nodeId = $"ns=2;s={result.ChannelName}.{result.DeviceName}.{result.TagName}";
 
                     tags.Add(new OpcTagInfo
@@ -201,11 +207,12 @@ namespace Koru1000.OpcService.Clients
                     });
                 }
 
+                _logger.LogInformation($"✅ Loaded {tags.Count} tags for driver {_driverId}");
                 return tags;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Failed to load tags for driver {_driverId}");
+                _logger.LogError(ex, $"💥 Failed to load tags for driver {_driverId}");
                 return new List<OpcTagInfo>();
             }
         }
@@ -234,7 +241,7 @@ namespace Koru1000.OpcService.Clients
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, $"Client {client.ClientId} status check failed");
+                        _logger.LogError(ex, $"💥 Client {client.ClientId} status check failed");
                     }
                 });
             }

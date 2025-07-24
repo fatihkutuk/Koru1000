@@ -30,7 +30,7 @@
         public int SessionTimeout { get; set; } = 300000;
         public int PublishingInterval { get; set; } = 1000;
         public int ReconnectDelay { get; set; } = 5000;
-        public int MaxTagsPerSubscription { get; set; } = 20000;
+        public int MaxTagsPerSubscription { get; set; } = 50000; // BUNU EKLEYİN
     }
     public class KepSecuritySettings
     {

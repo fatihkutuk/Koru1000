@@ -1,9 +1,9 @@
+// Koru1000.OpcService/Program.cs
 using Koru1000.OpcService;
 using Koru1000.OpcService.Services;
-using Koru1000.Core.Models;
 using Koru1000.Core.Models.OpcModels;
 using Koru1000.Shared;
-using Microsoft.Extensions.Hosting.WindowsServices; // Bu using eksikti
+using Microsoft.Extensions.Hosting.WindowsServices;
 
 var host = Host.CreateDefaultBuilder(args)
     .UseWindowsService(options =>
@@ -26,9 +26,9 @@ var host = Host.CreateDefaultBuilder(args)
             settings.Database.GetKbinConnectionString());
         services.AddSingleton(dbManager);
 
-        // OPC Services - SIRALI OLARAK
-        services.AddSingleton<IOpcDataProcessor, OpcDataProcessor>();
+        // OPC Services
         services.AddSingleton<IOpcClientManager, OpcClientManager>();
+        services.AddSingleton<IOpcDataProcessor, OpcDataProcessor>();
 
         // Worker Service
         services.AddHostedService<Worker>();
@@ -39,7 +39,6 @@ var host = Host.CreateDefaultBuilder(args)
         logging.AddConsole();
         logging.AddEventLog();
 
-        // OPC UA library logging
         logging.SetMinimumLevel(LogLevel.Information);
     })
     .Build();
@@ -55,11 +54,14 @@ static OpcServiceConfig LoadOpcServiceConfig()
         StatusCheckIntervalSeconds = 30,
         Limits = new ClientLimits
         {
-            MaxTagsPerSubscription = 20000,
+            MaxTagsPerSubscription = 20000,     // 20000 tag per client
             MaxChannelsPerSession = 50,
             MaxDevicesPerSession = 50,
-            PublishingIntervalMs = 1000,
-            MaxNotificationsPerPublish = 10000
+            PublishingIntervalMs = 2000,
+            MaxNotificationsPerPublish = 5000,  // 5000'e düþür
+            SessionTimeoutMs = 600000,
+            ReconnectDelayMs = 10000,
+            MaxReconnectAttempts = 5
         }
     };
 }

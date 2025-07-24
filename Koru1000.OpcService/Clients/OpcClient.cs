@@ -1,8 +1,8 @@
-﻿// Koru1000.OpcService/Clients/OpcClient.cs  
+﻿// Koru1000.OpcService/Clients/OpcClient.cs
 using Opc.Ua;
 using Opc.Ua.Client;
-using Opc.Ua.Configuration;
 using Koru1000.Core.Models.OpcModels;
+using Koru1000.OpcService.Services;
 using System.Text;
 using System.Globalization;
 
@@ -26,8 +26,6 @@ namespace Koru1000.OpcService.Clients
         private long _totalMessagesReceived = 0;
         private DateTime _lastDataReceived = DateTime.MinValue;
         private OpcConnectionStatus _connectionStatus = OpcConnectionStatus.Disconnected;
-        private int clientId;
-        private ILogger<OpcDriverManager> logger;
 
         public event EventHandler<OpcDataChangedEventArgs>? DataChanged;
         public event EventHandler<OpcStatusChangedEventArgs>? StatusChanged;
@@ -53,21 +51,11 @@ namespace Koru1000.OpcService.Clients
             _monitoredItems = new HashSet<MonitoredItem>();
         }
 
-        public OpcClient(int clientId, OpcDriverInfo driverInfo, List<OpcTagInfo> tags, DatabaseManager.DatabaseManager dbManager, ClientLimits limits, ILogger<OpcDriverManager> logger)
-        {
-            this.clientId = clientId;
-            _driverInfo = driverInfo;
-            _tags = tags;
-            _dbManager = dbManager;
-            _limits = limits;
-            this.logger = logger;
-        }
-
         public async Task StartAsync()
         {
             try
             {
-                _logger.LogInformation($"Starting OPC Client {_clientId} for driver {_driverInfo.DriverName} with {_tags.Count} tags");
+                _logger.LogInformation($"🚀 Starting OPC Client {_clientId} for driver {_driverInfo.DriverName} with {_tags.Count} tags");
 
                 await CreateApplicationConfigurationAsync();
                 await CreateSessionAsync();
@@ -78,11 +66,11 @@ namespace Koru1000.OpcService.Clients
                 _canProcess = true;
                 UpdateConnectionStatus(OpcConnectionStatus.Connected, "Client started successfully");
 
-                _logger.LogInformation($"OPC Client {_clientId} started successfully");
+                _logger.LogInformation($"✅ OPC Client {_clientId} started successfully - Ready to receive data");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Failed to start OPC Client {_clientId}");
+                _logger.LogError(ex, $"❌ Failed to start OPC Client {_clientId}");
                 UpdateConnectionStatus(OpcConnectionStatus.Error, ex.Message);
                 throw;
             }
@@ -92,7 +80,7 @@ namespace Koru1000.OpcService.Clients
         {
             try
             {
-                _logger.LogInformation($"Stopping OPC Client {_clientId}");
+                _logger.LogInformation($"🛑 Stopping OPC Client {_clientId}");
                 _canProcess = false;
 
                 if (_subscription != null)
@@ -110,150 +98,197 @@ namespace Koru1000.OpcService.Clients
                 }
 
                 UpdateConnectionStatus(OpcConnectionStatus.Disconnected, "Client stopped");
-                _logger.LogInformation($"OPC Client {_clientId} stopped");
+                _logger.LogInformation($"✅ OPC Client {_clientId} stopped");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error stopping OPC Client {_clientId}");
+                _logger.LogError(ex, $"❌ Error stopping OPC Client {_clientId}");
             }
         }
 
         private async Task CreateApplicationConfigurationAsync()
         {
-            var certificateSubjectName = $"CN=Koru1000 OPC Client {_clientId}, C=US, S=Arizona, O=OPC Foundation, DC=" + Utils.GetHostName();
-
-            _config = new ApplicationConfiguration()
-            {
-                ApplicationName = $"Koru1000 OPC Client {_clientId} - {_driverInfo.DriverName}",
-                ApplicationUri = $"urn:localhost:Koru1000:OpcClient:{_clientId}",
-                ApplicationType = ApplicationType.Client,
-                SecurityConfiguration = new SecurityConfiguration
-                {
-                    ApplicationCertificate = new CertificateIdentifier
-                    {
-                        StoreType = @"Directory",
-                        StorePath = @"%LocalApplicationData%\OPC Foundation\pki\own",
-                        SubjectName = certificateSubjectName
-                    },
-                    TrustedIssuerCertificates = new CertificateTrustList
-                    {
-                        StoreType = @"Directory",
-                        StorePath = @"%LocalApplicationData%\OPC Foundation\pki\issuer"
-                    },
-                    TrustedPeerCertificates = new CertificateTrustList
-                    {
-                        StoreType = @"Directory",
-                        StorePath = @"%LocalApplicationData%\OPC Foundation\pki\trusted"
-                    },
-                    RejectedCertificateStore = new CertificateTrustList
-                    {
-                        StoreType = @"Directory",
-                        StorePath = @"%LocalApplicationData%\OPC Foundation\pki\rejected"
-                    },
-                    AutoAcceptUntrustedCertificates = true,
-                    AddAppCertToTrustedStore = true
-                },
-                TransportQuotas = new TransportQuotas { OperationTimeout = 600000 },
-                ClientConfiguration = new ClientConfiguration { DefaultSessionTimeout = _limits.SessionTimeoutMs }
-            };
-
-            await _config.Validate(ApplicationType.Client);
-
-            var applicationInstance = new ApplicationInstance(_config);
-            bool certificateValid = await applicationInstance.CheckApplicationInstanceCertificates(false, 240);
-            if (!certificateValid)
-            {
-                throw new Exception($"Application certificate invalid for client {_clientId}!");
-            }
-
-            _config.CertificateValidator.CertificateValidation += (s, e) => {
-                _logger.LogDebug("Client {ClientId} Certificate validation: {Subject} - ACCEPTING", _clientId, e.Certificate?.Subject);
-                e.Accept = true;
-            };
+            _config = await SharedApplicationConfiguration.GetInstanceAsync(_logger);
+            _logger.LogInformation($"🔧 Client {_clientId} using shared application configuration");
         }
 
         private async Task CreateSessionAsync()
         {
-            var endpointDescription = CoreClientUtils.SelectEndpoint(_config, _driverInfo.EndpointUrl, useSecurity: true);
-            var endpointConfiguration = EndpointConfiguration.Create(_config);
-            endpointConfiguration.OperationTimeout = 15000;
-            var endpoint = new ConfiguredEndpoint(null, endpointDescription, endpointConfiguration);
-
-            IUserIdentity userIdentity;
-            if (!string.IsNullOrEmpty(_driverInfo.Credentials.Username))
+            try
             {
-                userIdentity = new UserIdentity(_driverInfo.Credentials.Username, _driverInfo.Credentials.Password);
-                _logger.LogInformation("Client {ClientId} using username authentication: {Username}", _clientId, _driverInfo.Credentials.Username);
+                _logger.LogInformation($"🔌 Client {_clientId} creating session to {_driverInfo.EndpointUrl}");
+
+                bool useSecurity = !string.Equals(_driverInfo.Security.Mode, "None", StringComparison.OrdinalIgnoreCase);
+
+                var endpointDescription = CoreClientUtils.SelectEndpoint(_config, _driverInfo.EndpointUrl, useSecurity: useSecurity);
+                var endpointConfiguration = EndpointConfiguration.Create(_config);
+                endpointConfiguration.OperationTimeout = 30000;
+
+                var endpoint = new ConfiguredEndpoint(null, endpointDescription, endpointConfiguration);
+
+                _logger.LogInformation($"🔐 Client {_clientId} selected endpoint: SecurityPolicy='{endpointDescription.SecurityPolicyUri}', SecurityMode='{endpointDescription.SecurityMode}'");
+
+                IUserIdentity userIdentity;
+
+                if (_driverInfo.Security.UserTokenType == "UserName" &&
+                    !string.IsNullOrEmpty(_driverInfo.Credentials.Username))
+                {
+                    var username = _driverInfo.Credentials.Username.Trim();
+                    var password = _driverInfo.Credentials.Password?.Trim() ?? "";
+
+                    userIdentity = new UserIdentity(username, password);
+                    _logger.LogInformation($"👤 Client {_clientId} using username authentication: {username}");
+                }
+                else
+                {
+                    userIdentity = new UserIdentity();
+                    _logger.LogInformation($"🔓 Client {_clientId} using anonymous authentication");
+                }
+
+                _session = await Session.Create(_config, endpoint, false,
+                    $"Koru1000 OPC Client {_clientId}",
+                    (uint)_limits.SessionTimeoutMs,
+                    userIdentity,
+                    null);
+
+                if (_session == null)
+                {
+                    throw new Exception($"Session could not be created for client {_clientId}");
+                }
+
+                _logger.LogInformation($"✅ Client {_clientId} session created successfully");
             }
-            else
+            catch (Exception ex)
             {
-                userIdentity = new UserIdentity();
-                _logger.LogInformation("Client {ClientId} using anonymous authentication", _clientId);
+                _logger.LogError(ex, $"❌ Client {_clientId} failed to create session");
+                throw;
             }
-
-            _session = await Session.Create(_config, endpoint, false,
-                $"Koru1000 OPC Client {_clientId}",
-                (uint)_limits.SessionTimeoutMs,
-                userIdentity,
-                null);
-
-            _logger.LogInformation("Client {ClientId} session created successfully", _clientId);
         }
 
         private async Task CreateSubscriptionAsync()
         {
-            _subscription = new Subscription(_session.DefaultSubscription)
+            try
             {
-                PublishingInterval = _driverInfo.ConnectionSettings.PublishingInterval,
-                MaxNotificationsPerPublish = (uint)_limits.MaxNotificationsPerPublish,
-                PublishingEnabled = true
-            };
+                _logger.LogInformation($"📋 Client {_clientId} creating subscription");
 
-            _logger.LogInformation("Client {ClientId} subscription created", _clientId);
+                _subscription = new Subscription(_session.DefaultSubscription)
+                {
+                    PublishingInterval = _driverInfo.ConnectionSettings.PublishingInterval,
+                    MaxNotificationsPerPublish = (uint)Math.Min(_limits.MaxNotificationsPerPublish, _tags.Count),
+                    PublishingEnabled = true,
+                    KeepAliveCount = 10,
+                    LifetimeCount = 100,
+                    Priority = 0
+                };
+
+                _logger.LogInformation($"⚙️ Client {_clientId} subscription created - PublishingInterval={_subscription.PublishingInterval}ms, MaxNotifications={_subscription.MaxNotificationsPerPublish}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Client {_clientId} failed to create subscription");
+                throw;
+            }
         }
 
         private async Task CreateMonitoredItemsAsync()
         {
-            foreach (var tag in _tags)
+            try
             {
-                try
+                _logger.LogInformation($"🏷️ Client {_clientId} creating {_tags.Count} monitored items");
+
+                foreach (var tag in _tags)
                 {
-                    var monitoredItem = new MonitoredItem(_subscription.DefaultItem)
+                    try
                     {
-                        DisplayName = $"{tag.ChannelName}.{tag.DeviceId}.{tag.TagName}",
-                        StartNodeId = tag.NodeId,
-                        AttributeId = Attributes.Value,
-                        MonitoringMode = MonitoringMode.Reporting,
-                        SamplingInterval = _driverInfo.ConnectionSettings.PublishingInterval,
-                        QueueSize = 1,
-                        DiscardOldest = true,
-                        Handle = tag // ESKİ KOD GİBİ - Handle'da tag bilgisini sakla
-                    };
+                        var monitoredItem = new MonitoredItem(_subscription.DefaultItem)
+                        {
+                            DisplayName = $"{tag.ChannelName}.{tag.DeviceId}.{tag.TagName}",
+                            StartNodeId = tag.NodeId,
+                            AttributeId = Attributes.Value,
+                            MonitoringMode = MonitoringMode.Reporting,
+                            SamplingInterval = Math.Max(_driverInfo.ConnectionSettings.PublishingInterval, 1000),
+                            QueueSize = 1,
+                            DiscardOldest = true,
+                            Handle = tag // ESKİ KOD GİBİ - Handle olarak tag bilgisini sakla
+                        };
 
-                    _monitoredItems.Add(monitoredItem);
+                        _monitoredItems.Add(monitoredItem);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"❌ Client {_clientId} failed to create monitored item for tag: {tag.NodeId}");
+                    }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Client {ClientId} failed to create monitored item for tag: {NodeId}", _clientId, tag.NodeId);
-                }
+
+                _logger.LogInformation($"✅ Client {_clientId} created {_monitoredItems.Count} monitored items successfully");
             }
-
-            _logger.LogInformation("Client {ClientId} created {Count} monitored items", _clientId, _monitoredItems.Count);
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Client {_clientId} failed to create monitored items");
+                throw;
+            }
         }
 
+        // Koru1000.OpcService/Clients/OpcClient.cs - StartSubscriptionAsync metodunu düzelt
+        // Koru1000.OpcService/Clients/OpcClient.cs - StartSubscriptionAsync metodunu tamamen yeniden yaz
         private async Task StartSubscriptionAsync()
         {
-            _subscription.AddItems(_monitoredItems);
+            try
+            {
+                _logger.LogInformation($"🚀 Client {_clientId} starting subscription with {_monitoredItems.Count} items");
 
-            // ESKİ KOD GİBİ - FastDataChangeCallback kullan
-            _subscription.FastDataChangeCallback = new FastDataChangeNotificationEventHandler(OnDataChanged);
+                // EXPLICIT TYPE BELIRTME
+                var itemsList = new List<MonitoredItem>(_monitoredItems);
 
-            _session.AddSubscription(_subscription);
-            _subscription.Create();
+                // TEK SEFERDE EKLE
+                _subscription.AddItems(itemsList);
+                _logger.LogInformation($"➕ Client {_clientId} added all {itemsList.Count} items to subscription");
 
-            _logger.LogInformation("Client {ClientId} subscription started with {Count} monitored items", _clientId, _monitoredItems.Count);
+                // ESKİ KOD GİBİ - FastDataChangeCallback
+                _subscription.FastDataChangeCallback = OnDataChanged;
+                _logger.LogInformation($"📡 Client {_clientId} FastDataChangeCallback set");
+
+                _session.AddSubscription(_subscription);
+                _logger.LogInformation($"📋 Client {_clientId} subscription added to session");
+
+                try
+                {
+                    _logger.LogInformation($"🔨 Client {_clientId} creating subscription...");
+                    _subscription.Create();
+
+                    if (_subscription.Created)
+                    {
+                        var totalItems = _subscription.MonitoredItems.Count();
+                        _logger.LogInformation($"✅ Client {_clientId} subscription CREATED SUCCESSFULLY with {totalItems} monitored items");
+
+                        // STATUS KONTROLÜNÜ ATLA - Sadece sayı ver
+                        if (totalItems > 0)
+                        {
+                            _logger.LogInformation($"📊 Client {_clientId} has {totalItems} monitored items");
+                        }
+                        else
+                        {
+                            _logger.LogWarning($"⚠️ Client {_clientId} has NO monitored items!");
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogError($"❌ Client {_clientId} subscription was NOT created successfully");
+                        throw new Exception($"Subscription was not created successfully for client {_clientId}");
+                    }
+                }
+                catch (ServiceResultException ex)
+                {
+                    _logger.LogError(ex, $"💥 Client {_clientId} subscription creation FAILED: {ex.StatusCode} - {ex.Message}");
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"💥 Client {_clientId} failed to start subscription");
+                throw;
+            }
         }
-
         // ESKİ KOD GİBİ - FastDataChangeCallback handler
         private void OnDataChanged(Subscription subscription, DataChangeNotification notification, IList<string> stringTable)
         {
@@ -278,11 +313,17 @@ namespace Koru1000.OpcService.Clients
                                 textForWrite.Append($"({tagInfo.DeviceId},'{tagInfo.TagName}',{doubleValue.ToString("f6", CultureInfo.InvariantCulture)}),");
                                 valueCount++;
                                 _totalMessagesReceived++;
+
+                                // İlk 10 veri için debug log
+                                if (_totalMessagesReceived <= 10)
+                                {
+                                    _logger.LogInformation($"🎯 Client {_clientId} DATA #{_totalMessagesReceived}: {tagInfo.TagName} = {doubleValue} [DeviceId={tagInfo.DeviceId}]");
+                                }
                             }
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "Client {ClientId} error processing data change item", _clientId);
+                            _logger.LogError(ex, $"❌ Client {_clientId} error processing data change item");
                         }
                     }
                 }
@@ -299,36 +340,27 @@ namespace Koru1000.OpcService.Clients
                         try
                         {
                             await _dbManager.ExecuteKbinAsync(textForWrite.ToString());
+
+                            // Her 100 mesajda bir log
+                            if (_totalMessagesReceived % 100 == 0)
+                            {
+                                _logger.LogInformation($"📊 Client {_clientId} processed {valueCount} values, total messages: {_totalMessagesReceived}");
+                            }
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "Client {ClientId} database write failed", _clientId);
+                            _logger.LogError(ex, $"❌ Client {_clientId} database write failed");
                         }
                     });
 
                     _lastDataReceived = DateTime.Now;
 
-                    // Debug log - İlk 10 batch için
-                    if (_totalMessagesReceived <= 100)
-                    {
-                        _logger.LogInformation("Client {ClientId} processed {Count} values, total: {Total}", _clientId, valueCount, _totalMessagesReceived);
-                    }
-
-                    // Performance log - Her 1000 mesajda bir
-                    if (_totalMessagesReceived % 1000 == 0)
-                    {
-                        _logger.LogInformation("Client {ClientId} performance: {Total} total messages", _clientId, _totalMessagesReceived);
-                    }
-
-                    // Data changed event fire et
-                    var tagValues = new List<OpcTagValue>();
-                    // TODO: Gerekirse tag values listesini doldur
-
+                    // Event fire et
                     var eventArgs = new OpcDataChangedEventArgs
                     {
                         DriverId = _driverInfo.DriverId,
                         DriverName = $"{_driverInfo.DriverName}-Client{_clientId}",
-                        TagValues = tagValues,
+                        TagValues = new List<OpcTagValue>(),
                         Timestamp = DateTime.Now
                     };
 
@@ -337,7 +369,7 @@ namespace Koru1000.OpcService.Clients
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Client {ClientId} data changed handler error", _clientId);
+                _logger.LogError(ex, $"💥 Client {_clientId} data changed handler error");
             }
         }
 
@@ -347,18 +379,22 @@ namespace Koru1000.OpcService.Clients
             {
                 if (_session?.Connected == true)
                 {
-                    // Simple test read
                     var nodesToRead = new ReadValueIdCollection();
                     nodesToRead.Add(new ReadValueId { NodeId = Variables.Server_ServerStatus_CurrentTime, AttributeId = Attributes.Value });
 
                     _session.Read(null, 0, TimestampsToReturn.Both, nodesToRead, out var results, out var diagnosticInfos);
 
+                    // DÜZELTME: results array kontrolü
                     if (results != null && results.Count > 0 && StatusCode.IsGood(results[0].StatusCode))
                     {
                         if (_connectionStatus != OpcConnectionStatus.Connected)
                         {
                             UpdateConnectionStatus(OpcConnectionStatus.Connected, "Connection verified");
                         }
+                    }
+                    else
+                    {
+                        UpdateConnectionStatus(OpcConnectionStatus.Error, "Server status read failed");
                     }
                 }
                 else
@@ -380,7 +416,7 @@ namespace Koru1000.OpcService.Clients
                 DriverName = $"{_driverInfo.DriverName}-Client{_clientId}",
                 EndpointUrl = _driverInfo.EndpointUrl,
                 ConnectionStatus = _connectionStatus,
-                LastConnected = DateTime.Now, // TODO: Gerçek değer
+                LastConnected = DateTime.Now,
                 LastDataReceived = _lastDataReceived,
                 TotalTagsSubscribed = _tags.Count,
                 ActiveSubscriptions = 1,
