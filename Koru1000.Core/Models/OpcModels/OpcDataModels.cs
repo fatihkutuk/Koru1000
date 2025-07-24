@@ -27,10 +27,18 @@
     {
         public int UpdateRate { get; set; } = 1000;
         public int GroupDeadband { get; set; } = 0;
-        public int SessionTimeout { get; set; } = 300000;
-        public int PublishingInterval { get; set; } = 1000;
+        public int SessionTimeout { get; set; } = 600000;  // 10 dakika
+        public int PublishingInterval { get; set; } = 2000;  // 2 saniye
+        public int MaxTagsPerSubscription { get; set; } = 10000;  // ✅ Yeni - Config'den gelecek
         public int ReconnectDelay { get; set; } = 5000;
-        public int MaxTagsPerSubscription { get; set; } = 50000; // BUNU EKLEYİN
+        public int MaxReconnectAttempts { get; set; } = 5;
+
+        // ✅ Yeni - Advanced Settings
+        public int KeepAliveCount { get; set; } = 10;
+        public int LifetimeCount { get; set; } = 100;
+        public int MaxNotificationsPerPublish { get; set; } = 10000;
+        public int QueueSize { get; set; } = 1;
+        public bool DiscardOldest { get; set; } = true;
     }
     public class KepSecuritySettings
     {
