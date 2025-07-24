@@ -272,7 +272,7 @@ namespace Koru1000.OpcService.Services
             {
                 // ESKİ KOD GİBİ - StringBuilder ile bulk insert
                 var textForWrite = new StringBuilder();
-                textForWrite.Append("CALL sp_setTagValueOnDataChanged(\"");
+                textForWrite.Append("CALL dbdataexchanger.sp_setTagValueOnDataChanged(\"");
 
                 foreach (var (DeviceId, TagName, Value, ReadTime) in tagValues)
                 {

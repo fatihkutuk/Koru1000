@@ -297,7 +297,7 @@ namespace Koru1000.OpcService.Clients
                 if (!_canProcess) return;
 
                 var textForWrite = new StringBuilder();
-                textForWrite.Append("CALL sp_setTagValueOnDataChanged(\"");
+                textForWrite.Append("CALL dbdataexchanger.sp_setTagValueOnDataChanged(\"");
                 int valueCount = 0;
 
                 foreach (var item in notification.MonitoredItems)
