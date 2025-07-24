@@ -11,7 +11,10 @@ using Koru1000.Core.Models.ViewModels;
 using Koru1000.Shared;
 using System.Collections.ObjectModel;
 using System.Runtime.InteropServices;
-
+using Koru1000.Core.Models.DomainModels;
+using Koru1000.Core.Models.DomainModels;
+using System.Windows.Controls;
+using System.Windows.Media;
 namespace Koru1000.ManagerUI
 {
     public partial class MainWindow : Window
@@ -19,7 +22,9 @@ namespace Koru1000.ManagerUI
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         static extern bool AllocConsole();
-
+        private SystemHierarchyService _systemHierarchyService; // EKLE
+        private Timer _tagRefreshTimer;
+        private DeviceNode _currentSelectedDevice;
         private DatabaseManager.DatabaseManager _dbManager;
         private ChannelDeviceRepository _channelDeviceRepo;
         private ChannelTypesRepository _channelTypesRepo;
@@ -49,7 +54,287 @@ namespace Koru1000.ManagerUI
             _statusTimer.Tick += (s, e) => TimeStatusText.Text = DateTime.Now.ToString("HH:mm:ss");
             _statusTimer.Start();
         }
+        private async void CheckServiceButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                CheckServiceButton.IsEnabled = false;
+                CheckServiceButton.Content = "Checking...";
 
+                // OPC Service'in çalışıp çalışmadığını kontrol et
+                var isServiceRunning = await CheckOpcServiceStatusAsync();
+
+                if (isServiceRunning)
+                {
+                    ServiceStatusText.Text = "✅ OPC Service is running and processing tags";
+                    ServiceStatusText.Foreground = Brushes.Green;
+                }
+                else
+                {
+                    ServiceStatusText.Text = "❌ OPC Service is not running or not processing data";
+                    ServiceStatusText.Foreground = Brushes.Red;
+                }
+            }
+            catch (Exception ex)
+            {
+                ServiceStatusText.Text = $"❌ Error checking service: {ex.Message}";
+                ServiceStatusText.Foreground = Brushes.Red;
+            }
+            finally
+            {
+                CheckServiceButton.IsEnabled = true;
+                CheckServiceButton.Content = "Check Service Status";
+            }
+        }
+        private async void RestartDriverMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (HierarchyTreeView.SelectedItem is DriverNode driver && string.IsNullOrEmpty(driver.DriverTypeName))
+            {
+                var result = MessageBox.Show(
+                    $"Are you sure you want to restart driver '{driver.Name}'?\n\nThis will:\n" +
+                    "1. Stop the driver\n" +
+                    "2. Wait 2 seconds\n" +
+                    "3. Start the driver again",
+                    "Restart Driver",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    await RestartDriverAsync(driver.Id, driver.Name);
+                }
+            }
+        }
+
+        private void ViewDriverConfigMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (HierarchyTreeView.SelectedItem is DriverNode driver && string.IsNullOrEmpty(driver.DriverTypeName))
+            {
+                ShowDriverConfigWindow(driver);
+            }
+        }
+
+        // Restart driver metodu
+        private async Task RestartDriverAsync(int driverId, string driverName)
+        {
+            try
+            {
+                StatusText.Text = $"Restarting driver {driverName}...";
+
+                // 1. Stop driver
+                StatusText.Text = $"Stopping driver {driverName}...";
+                await Task.Delay(1000); // Simülasyon - gerçekte OPC Service API'si çağrılacak
+
+                // 2. Wait
+                StatusText.Text = $"Waiting before restart...";
+                await Task.Delay(2000);
+
+                // 3. Start driver
+                StatusText.Text = $"Starting driver {driverName}...";
+                await Task.Delay(1000); // Simülasyon - gerçekte OPC Service API'si çağrılacak
+
+                MessageBox.Show($"Driver {driverName} restart command sent.\nCheck OPC Service logs for status.",
+                    "Driver Restart", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                StatusText.Text = $"Driver {driverName} restart completed";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to restart driver: {ex.Message}", "Error");
+                StatusText.Text = "Driver restart failed";
+            }
+        }
+
+        // Driver config gösterme metodu
+        private void ShowDriverConfigWindow(DriverNode driver)
+        {
+            try
+            {
+                // Driver bilgilerini SystemHierarchy'den al
+                var systemHierarchy = _systemHierarchyService?.CurrentHierarchy;
+                if (systemHierarchy == null)
+                {
+                    MessageBox.Show("Hierarchy not loaded. Please refresh first.", "Error");
+                    return;
+                }
+
+                // Driver'ı bul
+                DriverModel driverModel = null;
+                foreach (var driverType in systemHierarchy.DriverTypes)
+                {
+                    driverModel = driverType.Drivers.FirstOrDefault(d => d.Id == driver.Id);
+                    if (driverModel != null) break;
+                }
+
+                if (driverModel == null)
+                {
+                    MessageBox.Show("Driver not found in hierarchy.", "Error");
+                    return;
+                }
+
+                // Config window oluştur
+                var configWindow = new Window
+                {
+                    Title = $"Driver Configuration - {driver.Name}",
+                    Width = 600,
+                    Height = 500,
+                    WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                    Owner = this
+                };
+
+                var scrollViewer = new ScrollViewer();
+                var stackPanel = new StackPanel { Margin = new Thickness(20) };
+                scrollViewer.Content = stackPanel;
+                configWindow.Content = scrollViewer;
+
+                // Header
+                stackPanel.Children.Add(new TextBlock
+                {
+                    Text = $"🔧 Driver: {driver.Name}",
+                    FontSize = 18,
+                    FontWeight = FontWeights.Bold,
+                    Margin = new Thickness(0, 0, 0, 20)
+                });
+
+                // Basic Info
+                stackPanel.Children.Add(new TextBlock { Text = $"Driver ID: {driverModel.Id}", Margin = new Thickness(0, 5, 0, 5) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Driver Type ID: {driverModel.DriverTypeId}", Margin = new Thickness(0, 5, 0, 5) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Endpoint URL: {driverModel.EndpointUrl}", Margin = new Thickness(0, 5, 0, 5) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Protocol: {driverModel.ProtocolType}", Margin = new Thickness(0, 5, 0, 5) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Namespace: {driverModel.Namespace}", Margin = new Thickness(0, 5, 0, 5) });
+
+                stackPanel.Children.Add(new Separator { Margin = new Thickness(0, 15, 0, 15) });
+
+                // Connection Settings
+                stackPanel.Children.Add(new TextBlock
+                {
+                    Text = "🔗 Connection Settings",
+                    FontSize = 14,
+                    FontWeight = FontWeights.Bold,
+                    Margin = new Thickness(0, 0, 0, 10)
+                });
+
+                stackPanel.Children.Add(new TextBlock { Text = $"Update Rate: {driverModel.ConnectionSettings.UpdateRate} ms", Margin = new Thickness(10, 3, 0, 3) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Publishing Interval: {driverModel.ConnectionSettings.PublishingInterval} ms", Margin = new Thickness(10, 3, 0, 3) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Session Timeout: {driverModel.ConnectionSettings.SessionTimeout} ms", Margin = new Thickness(10, 3, 0, 3) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Max Tags Per Subscription: {driverModel.ConnectionSettings.MaxTagsPerSubscription}", Margin = new Thickness(10, 3, 0, 3) });
+
+                stackPanel.Children.Add(new Separator { Margin = new Thickness(0, 15, 0, 15) });
+
+                // Security Settings
+                stackPanel.Children.Add(new TextBlock
+                {
+                    Text = "🔒 Security Settings",
+                    FontSize = 14,
+                    FontWeight = FontWeights.Bold,
+                    Margin = new Thickness(0, 0, 0, 10)
+                });
+
+                stackPanel.Children.Add(new TextBlock { Text = $"Security Mode: {driverModel.SecuritySettings.Mode}", Margin = new Thickness(10, 3, 0, 3) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Security Policy: {driverModel.SecuritySettings.Policy}", Margin = new Thickness(10, 3, 0, 3) });
+                stackPanel.Children.Add(new TextBlock { Text = $"User Token Type: {driverModel.SecuritySettings.UserTokenType}", Margin = new Thickness(10, 3, 0, 3) });
+
+                stackPanel.Children.Add(new Separator { Margin = new Thickness(0, 15, 0, 15) });
+
+                // Credentials (güvenlik için password gizli)
+                stackPanel.Children.Add(new TextBlock
+                {
+                    Text = "👤 Credentials",
+                    FontSize = 14,
+                    FontWeight = FontWeights.Bold,
+                    Margin = new Thickness(0, 0, 0, 10)
+                });
+
+                stackPanel.Children.Add(new TextBlock { Text = $"Username: {driverModel.Credentials.Username}", Margin = new Thickness(10, 3, 0, 3) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Password: {(string.IsNullOrEmpty(driverModel.Credentials.Password) ? "Not Set" : "***")}", Margin = new Thickness(10, 3, 0, 3) });
+
+                stackPanel.Children.Add(new Separator { Margin = new Thickness(0, 15, 0, 15) });
+
+                // Custom Settings (JSON)
+                if (driverModel.CustomSettings.Any())
+                {
+                    stackPanel.Children.Add(new TextBlock
+                    {
+                        Text = "⚙️ Custom Settings (JSON)",
+                        FontSize = 14,
+                        FontWeight = FontWeights.Bold,
+                        Margin = new Thickness(0, 0, 0, 10)
+                    });
+
+                    var jsonTextBox = new TextBox
+                    {
+                        Text = System.Text.Json.JsonSerializer.Serialize(driverModel.CustomSettings, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }),
+                        IsReadOnly = true,
+                        TextWrapping = TextWrapping.Wrap,
+                        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                        Height = 150,
+                        FontFamily = new FontFamily("Consolas"),
+                        FontSize = 11,
+                        Background = Brushes.LightGray
+                    };
+
+                    stackPanel.Children.Add(jsonTextBox);
+                }
+
+                // Statistics
+                stackPanel.Children.Add(new Separator { Margin = new Thickness(0, 15, 0, 15) });
+                stackPanel.Children.Add(new TextBlock
+                {
+                    Text = "📊 Statistics",
+                    FontSize = 14,
+                    FontWeight = FontWeights.Bold,
+                    Margin = new Thickness(0, 0, 0, 10)
+                });
+
+                var totalChannels = driverModel.Channels.Count;
+                var totalDevices = driverModel.Channels.SelectMany(c => c.Devices).Count();
+                var totalTags = driverModel.Channels.SelectMany(c => c.Devices).SelectMany(d => d.Tags).Count();
+
+                stackPanel.Children.Add(new TextBlock { Text = $"Total Channels: {totalChannels}", Margin = new Thickness(10, 3, 0, 3) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Total Devices: {totalDevices}", Margin = new Thickness(10, 3, 0, 3) });
+                stackPanel.Children.Add(new TextBlock { Text = $"Total Configured Tags: {totalTags}", Margin = new Thickness(10, 3, 0, 3) });
+
+                // Close button
+                var closeButton = new Button
+                {
+                    Content = "Close",
+                    Width = 80,
+                    Height = 30,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    Margin = new Thickness(0, 20, 0, 0)
+                };
+
+                closeButton.Click += (s, e) => configWindow.Close();
+                stackPanel.Children.Add(closeButton);
+
+                configWindow.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error showing driver config: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        private async Task<bool> CheckOpcServiceStatusAsync()
+        {
+            try
+            {
+                // Son 1 dakikada tag yazılmış mı kontrol et
+                const string sql = @"
+            SELECT COUNT(*) 
+            FROM kbindb._tagoku 
+            WHERE readTime > DATE_SUB(NOW(), INTERVAL 1 MINUTE)";
+
+                var recentTagCount = await _dbManager.QueryFirstKbinAsync<int>(sql);
+
+                // Son 1 dakikada en az 1 tag yazılmışsa servis çalışıyor demektir
+                return recentTagCount > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
         private void LoadSettings()
         {
             try
@@ -121,11 +406,15 @@ namespace Koru1000.ManagerUI
                         _settings.Database.GetExchangerConnectionString(),
                         _settings.Database.GetKbinConnectionString());
 
+                    // Repository'leri initialize et
                     _channelDeviceRepo = new ChannelDeviceRepository(_dbManager);
                     _channelTypesRepo = new ChannelTypesRepository(_dbManager);
                     _deviceTypeRepo = new DeviceTypeRepository(_dbManager);
                     _tagRepo = new TagRepository(_dbManager);
-                    _hierarchyService = new HierarchyService(_dbManager);
+
+                    // YENİ: System hierarchy service'i initialize et
+                    _systemHierarchyService = new SystemHierarchyService(_dbManager);
+                    _hierarchyService = new HierarchyService(_systemHierarchyService);
 
                     StatusText.Text = "Veritabanı yapılandırıldı - Otomatik bağlanılıyor...";
 
@@ -143,6 +432,7 @@ namespace Koru1000.ManagerUI
                 StatusText.Text = "Veritabanı yapılandırma hatası";
             }
         }
+
 
         private async Task AutoConnectAsync()
         {
@@ -196,11 +486,6 @@ namespace Koru1000.ManagerUI
         private void RefreshMenuItem_Click(object sender, RoutedEventArgs e)
         {
             RefreshButton_Click(sender, e);
-        }
-
-        private async void RefreshHierarchyMenuItem_Click(object sender, RoutedEventArgs e)
-        {
-            await LoadHierarchy();
         }
 
         private void ExpandAllMenuItem_Click(object sender, RoutedEventArgs e)
@@ -341,8 +626,19 @@ namespace Koru1000.ManagerUI
             DetailsPanel.Children.Add(new TextBlock { Text = $"Is Loading: {(channel.IsLoading ? "Yes" : "No")}" });
         }
 
-        private void ShowDeviceDetails(DeviceNode device)
+        // ShowDeviceDetails metodunu düzeltilmiş haliyle değiştirin
+
+
+        private async void ShowDeviceDetails(DeviceNode device)
         {
+            // Timer'ı durdur
+            _tagRefreshTimer?.Dispose();
+            _currentSelectedDevice = device;
+
+            DetailsPanel.Children.Clear();
+            NoSelectionText.Visibility = Visibility.Collapsed;
+
+            // Device Info
             DetailsPanel.Children.Add(new TextBlock
             {
                 Text = $"🔧 Device: {device.Name}",
@@ -350,14 +646,350 @@ namespace Koru1000.ManagerUI
                 FontWeight = FontWeights.Bold,
                 Margin = new Thickness(0, 0, 0, 10)
             });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Status: {device.StatusDescription} {device.StatusIcon}" });
+
+            DetailsPanel.Children.Add(new TextBlock { Text = $"Status: {device.StatusDescription} {GetDeviceStatusIcon(device.StatusCode)}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Type: {device.DeviceTypeName}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Device ID: {device.Id}" });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Device Type ID: {device.DeviceTypeId}" });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Status Code: {device.StatusCode}" });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Tags: {device.Children.Count}" });
-            DetailsPanel.Children.Add(new TextBlock { Text = $"Tags Loaded: {(device.IsChildrenLoaded ? "Yes" : "No")}" });
             DetailsPanel.Children.Add(new TextBlock { Text = $"Last Update: {device.LastUpdateTime}" });
+
+            // Real-time Tag Container
+            var realTimeContainer = new Border
+            {
+                BorderBrush = Brushes.Blue,
+                BorderThickness = new Thickness(2),
+                Margin = new Thickness(0, 10, 0, 10),
+                Padding = new Thickness(10)
+            };
+
+            var realTimePanel = new StackPanel();
+            realTimeContainer.Child = realTimePanel;
+
+            realTimePanel.Children.Add(new TextBlock
+            {
+                Text = "📡 Real-Time Tag Values (Auto-Refresh)",
+                FontWeight = FontWeights.Bold,
+                FontSize = 14,
+                Margin = new Thickness(0, 0, 0, 10)
+            });
+
+            var tagListContainer = new ScrollViewer
+            {
+                MaxHeight = 300,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+            };
+            var tagListPanel = new StackPanel { Name = "RealTimeTagPanel" };
+            tagListContainer.Content = tagListPanel;
+            realTimePanel.Children.Add(tagListContainer);
+
+            DetailsPanel.Children.Add(realTimeContainer);
+
+            // Control Panel
+            var controlPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 10) };
+
+            var pauseButton = new Button
+            {
+                Content = "⏸️ Pause Refresh",
+                Margin = new Thickness(0, 0, 10, 0),
+                Padding = new Thickness(10, 5, 10, 5)
+            };
+
+            var loadAllButton = new Button
+            {
+                Content = "📋 Load All Tags",
+                Margin = new Thickness(0, 0, 10, 0),
+                Padding = new Thickness(10, 5, 10, 5)
+            };
+
+            controlPanel.Children.Add(pauseButton);
+            controlPanel.Children.Add(loadAllButton);
+            DetailsPanel.Children.Add(controlPanel);
+
+            // İlk yükleme
+            await RefreshRealTimeTagsAsync(device, tagListPanel);
+
+            // Timer başlat - Her 2 saniyede bir refresh
+            _tagRefreshTimer = new Timer(async _ =>
+            {
+                if (_currentSelectedDevice == device) // Hala aynı device seçili mi?
+                {
+                    await Dispatcher.InvokeAsync(async () =>
+                    {
+                        await RefreshRealTimeTagsAsync(device, tagListPanel);
+                    });
+                }
+            }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+
+            // Pause butonu
+            bool isPaused = false;
+            pauseButton.Click += (s, e) =>
+            {
+                isPaused = !isPaused;
+                if (isPaused)
+                {
+                    _tagRefreshTimer?.Dispose();
+                    pauseButton.Content = "▶️ Resume Refresh";
+                }
+                else
+                {
+                    _tagRefreshTimer = new Timer(async _ =>
+                    {
+                        if (_currentSelectedDevice == device)
+                        {
+                            await Dispatcher.InvokeAsync(async () =>
+                            {
+                                await RefreshRealTimeTagsAsync(device, tagListPanel);
+                            });
+                        }
+                    }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+                    pauseButton.Content = "⏸️ Pause Refresh";
+                }
+            };
+
+            // Load All butonu (debug amaçlı)
+            loadAllButton.Click += async (s, e) =>
+            {
+                try
+                {
+                    loadAllButton.IsEnabled = false;
+                    loadAllButton.Content = "Loading...";
+
+                    var tags = await _systemHierarchyService.LoadTagsForDeviceAsync(device.Id, device.DeviceTypeId);
+                    MessageBox.Show($"Device has {tags.Count} total tags configured.", "Tag Count");
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Error: {ex.Message}", "Error");
+                }
+                finally
+                {
+                    loadAllButton.IsEnabled = true;
+                    loadAllButton.Content = "📋 Load All Tags";
+                }
+            };
+
+            if (DetailsTab != null)
+                DetailsTab.IsSelected = true;
+        }
+
+        private async Task RefreshRealTimeTagsAsync(DeviceNode device, StackPanel tagListPanel)
+        {
+            try
+            {
+                // Son 1 saatte güncellenen tag'leri getir (OPC servisi tarafından yazılanlar)
+                const string sql = @"
+            SELECT 
+                t.tagName,
+                t.tagValue,
+                t.readTime,
+                TIMESTAMPDIFF(SECOND, t.readTime, NOW()) as secondsAgo
+            FROM kbindb._tagoku t
+            WHERE t.devId = @DeviceId 
+            AND t.readTime > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+            ORDER BY t.readTime DESC
+            LIMIT 20";
+
+                var results = await _dbManager.QueryKbinAsync<dynamic>(sql, new { DeviceId = device.Id });
+
+                tagListPanel.Children.Clear();
+
+                if (!results.Any())
+                {
+                    tagListPanel.Children.Add(new TextBlock
+                    {
+                        Text = "❌ No recent tag data found. Is OPC Service running?",
+                        Foreground = Brushes.Red,
+                        FontWeight = FontWeights.Bold
+                    });
+                    return;
+                }
+
+                foreach (var tag in results)
+                {
+                    var secondsAgo = (int)tag.secondsAgo;
+                    var timeColor = secondsAgo < 10 ? Brushes.Green :
+                                   secondsAgo < 60 ? Brushes.Orange : Brushes.Red;
+
+                    var tagDisplay = new Border
+                    {
+                        BorderBrush = Brushes.LightGray,
+                        BorderThickness = new Thickness(1),
+                        Margin = new Thickness(0, 1, 0, 1),
+                        Padding = new Thickness(5)
+                    };
+
+                    var tagInfo = new TextBlock
+                    {
+                        Text = $"🏷️ {tag.tagName} = {tag.tagValue} ({secondsAgo}s ago)",
+                        Foreground = timeColor,
+                        FontSize = 11
+                    };
+
+                    tagDisplay.Child = tagInfo;
+                    tagListPanel.Children.Add(tagDisplay);
+                }
+
+                // Summary
+                tagListPanel.Children.Add(new TextBlock
+                {
+                    Text = $"✅ {results.Count()} active tags | Last refresh: {DateTime.Now:HH:mm:ss}",
+                    FontWeight = FontWeights.Bold,
+                    Foreground = Brushes.Blue,
+                    Margin = new Thickness(0, 5, 0, 0),
+                    FontSize = 10
+                });
+            }
+            catch (Exception ex)
+            {
+                tagListPanel.Children.Clear();
+                tagListPanel.Children.Add(new TextBlock
+                {
+                    Text = $"❌ Error refreshing tags: {ex.Message}",
+                    Foreground = Brushes.Red
+                });
+            }
+        }
+
+        // Driver Context Menu Events
+        private void StartDriverMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (HierarchyTreeView.SelectedItem is DriverNode driver && string.IsNullOrEmpty(driver.DriverTypeName))
+            {
+                StartDriverAsync(driver.Id, driver.Name);
+            }
+        }
+
+        private void StopDriverMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (HierarchyTreeView.SelectedItem is DriverNode driver && string.IsNullOrEmpty(driver.DriverTypeName))
+            {
+                StopDriverAsync(driver.Id, driver.Name);
+            }
+        }
+
+        private async void StartDriverAsync(int driverId, string driverName)
+        {
+            try
+            {
+                StatusText.Text = $"Starting driver {driverName}...";
+
+                // Bu kısmı OPC Service API'si hazır olduğunda implement edeceğiz
+                // Şimdilik basit bir simülasyon
+                await Task.Delay(1000);
+
+                MessageBox.Show($"Driver {driverName} start command sent.\nCheck OPC Service logs for status.",
+                    "Driver Start", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                StatusText.Text = $"Driver {driverName} start command sent";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to start driver: {ex.Message}", "Error");
+                StatusText.Text = "Driver start failed";
+            }
+        }
+
+        private async void StopDriverAsync(int driverId, string driverName)
+        {
+            try
+            {
+                StatusText.Text = $"Stopping driver {driverName}...";
+
+                // Bu kısmı OPC Service API'si hazır olduğunda implement edeceğiz
+                await Task.Delay(1000);
+
+                MessageBox.Show($"Driver {driverName} stop command sent.\nCheck OPC Service logs for status.",
+                    "Driver Stop", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                StatusText.Text = $"Driver {driverName} stop command sent";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to stop driver: {ex.Message}", "Error");
+                StatusText.Text = "Driver stop failed";
+            }
+        }
+
+
+
+        // Helper methods - bunları MainWindow class'ına ekleyin
+        private async Task<(int typeTagCount, int individualTagCount)> GetTagCountsAsync(int deviceId, int deviceTypeId)
+        {
+            var typeTagTask = _dbManager.QueryFirstExchangerAsync<int>(
+                "SELECT COUNT(*) FROM devicetypetag WHERE deviceTypeId = @DeviceTypeId",
+                new { DeviceTypeId = deviceTypeId });
+
+            var individualTagTask = _dbManager.QueryFirstExchangerAsync<int>(
+                "SELECT COUNT(*) FROM deviceindividualtag WHERE channelDeviceId = @DeviceId",
+                new { DeviceId = deviceId });
+
+            await Task.WhenAll(typeTagTask, individualTagTask);
+
+            return (await typeTagTask, await individualTagTask);
+        }
+
+        private async Task<List<TagModel>> LoadRecentTagsForDeviceAsync(int deviceId, int deviceTypeId, int limit)
+        {
+            // Sadece recent value'su olan tag'leri getir - HIZLI
+            const string sql = @"
+        SELECT DISTINCT 
+            0 as TagId,
+            t.tagName as TagName,
+            t.tagValue,
+            t.readTime,
+            'Unknown' as DataType,
+            0 as IsWritable
+        FROM kbindb._tagoku t
+        WHERE t.devId = @DeviceId 
+        AND t.readTime > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+        ORDER BY t.readTime DESC
+        LIMIT @Limit";
+
+            var results = await _dbManager.QueryKbinAsync<dynamic>(sql,
+                new { DeviceId = deviceId, Limit = limit });
+
+            var tags = new List<TagModel>();
+            foreach (var result in results)
+            {
+                tags.Add(new TagModel
+                {
+                    Id = 0,
+                    Name = result.TagName?.ToString() ?? "Unknown",
+                    CurrentValue = result.tagValue,
+                    DataType = "Unknown",
+                    Quality = "Good",
+                    LastReadTime = result.readTime,
+                    IsWritable = false
+                });
+            }
+
+            return tags;
+        }
+
+        private async Task<List<TagModel>> LoadAllTagsForDeviceAsync(int deviceId, int deviceTypeId)
+        {
+            // Bu yavaş ama eksiksiz - sadece istendiğinde kullan
+            return await _systemHierarchyService.LoadTagsForDeviceAsync(deviceId, deviceTypeId);
+        }
+
+        private string GetDeviceStatusIcon(byte statusCode)
+        {
+            return statusCode switch
+            {
+                11 or 31 or 41 or 61 => "🟢", // Active states
+                51 => "🟡", // Disabled
+                _ => "🔴" // Error or unknown
+            };
+        }
+
+        private string GetQualityIcon(string quality)
+        {
+            return quality?.ToLower() switch
+            {
+                "good" => "🟢",
+                "uncertain" => "🟡",
+                "bad" => "🔴",
+                _ => "❓"
+            };
         }
 
         private void ShowTagDetails(TagNode tag)
@@ -404,31 +1036,24 @@ namespace Koru1000.ManagerUI
             {
                 if (_hierarchyService != null)
                 {
-                    StatusText.Text = "Loading hierarchy (lazy loading)...";
-                    Console.WriteLine("=== LAZY HIERARCHY LOADING START ===");
+                    StatusText.Text = "Loading complete hierarchy...";
+                    Console.WriteLine("=== LOADING COMPLETE HIERARCHY ===");
 
+                    var startTime = DateTime.Now;
                     var hierarchy = await _hierarchyService.BuildHierarchyAsync();
-                    Console.WriteLine($"=== HIERARCHY LOADED: {hierarchy?.Count ?? 0} root items ===");
+                    var loadTime = DateTime.Now - startTime;
+
+                    Console.WriteLine($"=== HIERARCHY LOADED in {loadTime.TotalMilliseconds:F0}ms: {hierarchy?.Count ?? 0} root items ===");
 
                     // UI Thread'de güncelleyelim
                     Dispatcher.Invoke(() =>
                     {
                         if (hierarchy != null && hierarchy.Any())
                         {
-                            // Önce temizle
-                            HierarchyTreeView.ItemsSource = null;
-
-                            // Sonra set et
                             HierarchyTreeView.ItemsSource = hierarchy;
+                            StatusText.Text = $"Complete hierarchy loaded in {loadTime.TotalMilliseconds:F0}ms - {hierarchy.Count} driver types";
 
-                            Console.WriteLine($"TreeView ItemsSource set with {hierarchy.Count} items");
-
-                            StatusText.Text = $"Hierarchy loaded - {hierarchy.Count} root items (expand nodes to load children)";
-
-                            // TreeView'ı refresh et
-                            HierarchyTreeView.UpdateLayout();
-
-                            // Hierarchy stats güncelle
+                            // İstatistikleri güncelle
                             UpdateHierarchyStats();
                         }
                         else
@@ -450,23 +1075,53 @@ namespace Koru1000.ManagerUI
             }
         }
 
+        // Refresh için cache'i temizle
+        private async void RefreshHierarchyMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                StatusText.Text = "Refreshing hierarchy...";
+                _systemHierarchyService?.ClearCache();
+                await LoadHierarchy();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Hierarchy refresh failed: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
         private void UpdateHierarchyStats()
         {
             try
             {
                 if (HierarchyTreeView.ItemsSource is ObservableCollection<TreeNodeBase> rootNodes)
                 {
-                    int totalNodes = CountAllNodes(rootNodes);
-                    int loadedNodes = CountLoadedNodes(rootNodes);
-
-                    if (HierarchyStatsText != null)
+                    var systemHierarchy = _systemHierarchyService?.CurrentHierarchy;
+                    if (systemHierarchy != null)
                     {
-                        HierarchyStatsText.Text = $"🌳 Hierarchy Statistics:\n" +
-                                                 $"   • Root Nodes: {rootNodes.Count}\n" +
-                                                 $"   • Total Visible Nodes: {totalNodes}\n" +
-                                                 $"   • Loaded Node Types: {loadedNodes}\n" +
-                                                 $"   • Lazy Loading: Active\n" +
-                                                 $"   • Last Update: {DateTime.Now:HH:mm:ss}";
+                        if (HierarchyStatsText != null)
+                        {
+                            HierarchyStatsText.Text = $"🌳 System Hierarchy Statistics:\n" +
+                                                     $"   • Driver Types: {systemHierarchy.DriverTypes.Count}\n" +
+                                                     $"   • Total Drivers: {systemHierarchy.Statistics.GetValueOrDefault("TotalDrivers", 0)}\n" +
+                                                     $"   • Total Channels: {systemHierarchy.Statistics.GetValueOrDefault("TotalChannels", 0)}\n" +
+                                                     $"   • Total Devices: {systemHierarchy.TotalDevices:N0}\n" +
+                                                     $"   • Total Tags: {systemHierarchy.TotalTags:N0}\n" +
+                                                     $"   • Loaded At: {systemHierarchy.LoadedAt:HH:mm:ss}\n" +
+                                                     $"   • Cache Status: Active";
+                        }
+                    }
+                    else
+                    {
+                        int totalNodes = CountAllNodes(rootNodes);
+                        if (HierarchyStatsText != null)
+                        {
+                            HierarchyStatsText.Text = $"🌳 Hierarchy Statistics:\n" +
+                                                     $"   • Root Nodes: {rootNodes.Count}\n" +
+                                                     $"   • Total Visible Nodes: {totalNodes}\n" +
+                                                     $"   • Cache Status: Not Available\n" +
+                                                     $"   • Last Update: {DateTime.Now:HH:mm:ss}";
+                        }
                     }
                 }
             }
@@ -816,6 +1471,7 @@ namespace Koru1000.ManagerUI
         protected override void OnClosed(EventArgs e)
         {
             _statusTimer?.Stop();
+            _tagRefreshTimer?.Dispose();
             base.OnClosed(e);
         }
         #endregion

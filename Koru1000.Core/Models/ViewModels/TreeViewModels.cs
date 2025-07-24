@@ -136,6 +136,10 @@ namespace Koru1000.Core.Models.ViewModels
         public string ChannelTypeName { get; set; }
         public object DriverSettings { get; set; } // DriverSettings object'i
 
+        // Yeni eklenen properties
+        public bool HasTagsLoaded { get; set; } = false;
+        public int EstimatedTagCount { get; set; } = 0;
+
         public DeviceNode()
         {
             Icon = "🔧";

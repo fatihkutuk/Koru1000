@@ -83,26 +83,18 @@
                     </Border>
 
                     <!-- TreeView -->
+                    <!-- TreeView kısmını şununla değiştirin -->
                     <TreeView Grid.Row="1" Name="HierarchyTreeView" 
-                              SelectedItemChanged="HierarchyTreeView_SelectedItemChanged"
-                              Background="WhiteSmoke">
+          SelectedItemChanged="HierarchyTreeView_SelectedItemChanged"
+          Background="WhiteSmoke">
                         <TreeView.ItemTemplate>
                             <HierarchicalDataTemplate ItemsSource="{Binding Children}">
                                 <StackPanel Orientation="Horizontal" Margin="2">
-                                    <!-- Ana icon -->
                                     <TextBlock Text="{Binding Icon}" FontSize="14" Margin="0,0,5,0"/>
-                                    <!-- Node adı -->
                                     <TextBlock Text="{Binding DisplayName}" FontWeight="Bold"/>
-                                    <!-- Loading indicator -->
-                                    <TextBlock Text=" ⏳" FontSize="12" Margin="5,0,0,0"
-                                              Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}}"/>
-                                    <!-- Child count -->
-                                    <TextBlock Text=" [" FontSize="10" Margin="5,0,0,0" 
-                                              Visibility="{Binding IsChildrenLoaded, Converter={StaticResource BoolToVisibilityConverter}}"/>
-                                    <TextBlock Text="{Binding Children.Count}" FontSize="10"
-                                              Visibility="{Binding IsChildrenLoaded, Converter={StaticResource BoolToVisibilityConverter}}"/>
-                                    <TextBlock Text="]" FontSize="10"
-                                              Visibility="{Binding IsChildrenLoaded, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                    <TextBlock Text=" [" FontSize="10" Margin="5,0,0,0"/>
+                                    <TextBlock Text="{Binding Children.Count}" FontSize="10"/>
+                                    <TextBlock Text="]" FontSize="10"/>
                                 </StackPanel>
                             </HierarchicalDataTemplate>
                         </TreeView.ItemTemplate>
@@ -111,19 +103,24 @@
                                 <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
                                 <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
                                 <Setter Property="FontWeight" Value="Normal"/>
-                                <!-- Expanded event handler -->
-                                <EventSetter Event="Expanded" Handler="TreeViewItem_Expanded"/>
                                 <Style.Triggers>
                                     <Trigger Property="IsSelected" Value="True">
                                         <Setter Property="Background" Value="LightBlue"/>
                                     </Trigger>
-                                    <!-- Loading state trigger -->
-                                    <DataTrigger Binding="{Binding IsLoading}" Value="True">
-                                        <Setter Property="Foreground" Value="Gray"/>
-                                    </DataTrigger>
                                 </Style.Triggers>
                             </Style>
                         </TreeView.ItemContainerStyle>
+
+                        <!-- Context Menu Ekle -->
+                        <TreeView.ContextMenu>
+                            <ContextMenu Name="TreeContextMenu">
+                                <MenuItem Header="Start Driver" Name="StartDriverMenuItem" Click="StartDriverMenuItem_Click"/>
+                                <MenuItem Header="Stop Driver" Name="StopDriverMenuItem" Click="StopDriverMenuItem_Click"/>
+                                <MenuItem Header="Restart Driver" Name="RestartDriverMenuItem" Click="RestartDriverMenuItem_Click"/>
+                                <Separator/>
+                                <MenuItem Header="View Driver Config" Name="ViewDriverConfigMenuItem" Click="ViewDriverConfigMenuItem_Click"/>
+                            </ContextMenu>
+                        </TreeView.ContextMenu>
                     </TreeView>
                 </Grid>
             </Border>
@@ -140,12 +137,22 @@
                                 <StackPanel>
                                     <TextBlock Text="Koru1000 Database Manager" FontSize="24" FontWeight="Bold" Margin="0,10"/>
                                     <Separator Margin="0,10"/>
+
+                                    <!-- SERVICE STATUS PANEL -->
+                                    <Border BorderBrush="DarkBlue" BorderThickness="2" Padding="10" Margin="0,10">
+                                        <StackPanel>
+                                            <TextBlock Text="🚀 OPC Service Status" FontSize="18" FontWeight="Bold" Margin="0,0,0,10"/>
+                                            <TextBlock Name="ServiceStatusText" FontSize="14" Margin="0,5"/>
+                                            <Button Name="CheckServiceButton" Content="Check Service Status" Width="150" 
+                                HorizontalAlignment="Left" Margin="0,10" Click="CheckServiceButton_Click"/>
+                                        </StackPanel>
+                                    </Border>
+
                                     <TextBlock Name="TotalDevicesText" FontSize="16" Margin="0,10"/>
                                     <TextBlock Name="StatusStatsText" FontSize="14" Margin="0,10"/>
                                     <TextBlock Name="TagStatsText" FontSize="14" Margin="0,10"/>
                                     <TextBlock Name="SystemStatsText" FontSize="14" Margin="0,10"/>
 
-                                    <!-- Hiyerarşi bilgileri -->
                                     <Separator Margin="0,20"/>
                                     <TextBlock Text="🌳 Hierarchy Information" FontSize="18" FontWeight="Bold" Margin="0,10"/>
                                     <TextBlock Name="HierarchyStatsText" FontSize="14" Margin="0,10"/>
