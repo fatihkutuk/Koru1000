@@ -222,7 +222,7 @@ namespace Koru1000.KepServerService.Services
             {
                 // Mevcut sistem gibi StringBuilder ile bulk insert
                 var textForWrite = new StringBuilder();
-                textForWrite.Append("CALL sp_setTagValueOnDataChanged(\"");
+                textForWrite.Append("CALL dbdataexchanger.sp_setTagValueOnDataChanged(\"");
 
                 foreach (var tagValue in batch)
                 {

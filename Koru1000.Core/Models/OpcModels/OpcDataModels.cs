@@ -39,6 +39,7 @@
         public int MaxNotificationsPerPublish { get; set; } = 10000;
         public int QueueSize { get; set; } = 1;
         public bool DiscardOldest { get; set; } = true;
+
     }
     public class KepSecuritySettings
     {

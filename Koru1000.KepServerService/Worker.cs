@@ -123,16 +123,17 @@ namespace Koru1000.KepServerService
         {
             try
             {
-                // ✅ DÜZELTME - Dynamic'leri hemen explicit cast edin
                 var driverId = Convert.ToInt32(driverData.id);
                 var driverName = Convert.ToString(driverData.name) ?? "Unknown";
                 var customSettingsJson = driverData.customSettings?.ToString();
 
-                // Enhanced Driver Config Parsing - Senin JSON config'ine göre
+                // Enhanced Driver Config Parsing
                 var driverConfig = ParseEnhancedDriverConfig(customSettingsJson);
 
                 _logger.LogInformation($"🔧 Driver Config: {driverName} - Endpoint: {driverConfig.EndpointUrl}, " +
-                    $"Security: {driverConfig.Security.Mode}, MaxTags: {driverConfig.ConnectionSettings.MaxTagsPerSubscription}");
+                    $"Security: {driverConfig.Security.Mode}, MaxTags: {driverConfig.ConnectionSettings.MaxTagsPerSubscription}, " +
+                    $"PublishingInterval: {driverConfig.ConnectionSettings.PublishingInterval}ms, " +
+                    $"SessionTimeout: {driverConfig.ConnectionSettings.SessionTimeout}ms");
 
                 var channelTypeIds = await GetDriverChannelTypeIdsAsync(driverId);
 
@@ -239,6 +240,29 @@ namespace Koru1000.KepServerService
 
                     if (connectionElement.TryGetProperty("maxTagsPerSubscription", out var maxTagsElement))
                         config.ConnectionSettings.MaxTagsPerSubscription = maxTagsElement.GetInt32();
+
+                    // ✅ Eksik alanları da parse et
+                    if (connectionElement.TryGetProperty("reconnectDelay", out var reconnectDelayElement))
+                        config.ConnectionSettings.ReconnectDelay = reconnectDelayElement.GetInt32();
+
+                    if (connectionElement.TryGetProperty("maxReconnectAttempts", out var maxReconnectAttemptsElement))
+                        config.ConnectionSettings.MaxReconnectAttempts = maxReconnectAttemptsElement.GetInt32();
+                    // ✅ Startup Strategy Settings
+                    if (connectionElement.TryGetProperty("startupStrategy", out var strategyElement))
+                    {
+                        var strategy = strategyElement.GetString()?.ToLower();
+                        config.StartupStrategy = strategy switch
+                        {
+                            "sequential" => ClientStartupStrategy.Sequential,
+                            "parallel" => ClientStartupStrategy.Parallel,
+                            _ => ClientStartupStrategy.Parallel // Default
+                        };
+                    }
+                    if (connectionElement.TryGetProperty("waitForData", out var waitDataElement))
+                        config.WaitForData = waitDataElement.GetBoolean();
+
+                    if (connectionElement.TryGetProperty("clientStartDelay", out var delayElement))
+                        config.ClientStartDelay = delayElement.GetInt32();
                 }
 
                 _logger.LogInformation("✅ Enhanced driver config parsed successfully");
@@ -305,5 +329,33 @@ namespace Koru1000.KepServerService
         public KepSecuritySettings Security { get; set; } = new();
         public KepCredentials Credentials { get; set; } = new();
         public KepConnectionSettings ConnectionSettings { get; set; } = new();
+
+        // ✅ Startup Strategy Properties
+        public ClientStartupStrategy StartupStrategy { get; set; } = ClientStartupStrategy.Parallel;
+        public bool WaitForData { get; set; } = false;
+        public int ClientStartDelay { get; set; } = 1000;
+
+        public ClientLimits CreateClientLimits()
+        {
+            return new ClientLimits
+            {
+                MaxTagsPerSubscription = ConnectionSettings.MaxTagsPerSubscription,
+                MaxChannelsPerSession = 50,
+                MaxDevicesPerSession = 50,
+                MaxSubscriptionsPerSession = 10,
+                PublishingIntervalMs = ConnectionSettings.PublishingInterval,
+                MaxNotificationsPerPublish = Math.Min(ConnectionSettings.MaxTagsPerSubscription / 2, 10000),
+                SessionTimeoutMs = ConnectionSettings.SessionTimeout,
+                ReconnectDelayMs = ConnectionSettings.ReconnectDelay > 0 ? ConnectionSettings.ReconnectDelay : 5000,
+                MaxReconnectAttempts = ConnectionSettings.MaxReconnectAttempts > 0 ? ConnectionSettings.MaxReconnectAttempts : 5
+            };
+        }
+    }
+
+    // ✅ Startup Strategy Enum
+    public enum ClientStartupStrategy
+    {
+        Sequential,  // Sıralı - güvenli ama yavaş
+        Parallel     // Paralel - hızlı ama riskli
     }
 }
