@@ -163,7 +163,7 @@ namespace Koru1000.KepServerService.Services
                     driverClients.Add(opcClient);
 
                     // ✅ Eski kodunuzdaki gibi - session oluştuktan sonra kısa bekle
-                    await Task.Delay(2000); // 2 saniye session için
+                    await Task.Delay(100); // 2 saniye session için
 
                     // ✅ Subscription aktif olana kadar bekle
                     await WaitForSubscriptionReady(opcClient, clientId);
@@ -173,7 +173,7 @@ namespace Koru1000.KepServerService.Services
                     // ✅ Sonraki client için delay (KEP Server yükünü azalt)
                     if (i < clientGroups.Count - 1)
                     {
-                        await Task.Delay(config.ClientStartDelay);
+                       // await Task.Delay(config.ClientStartDelay);
                     }
                 }
                 catch (Exception ex)
@@ -204,7 +204,7 @@ namespace Koru1000.KepServerService.Services
                 }
                 catch { }
 
-                await Task.Delay(checkIntervalMs);
+                //await Task.Delay(checkIntervalMs);
             }
 
             _logger.LogWarning($"⚠️ Client {clientId}: Subscription {maxWaitSeconds}s içinde hazır olmadı");
@@ -232,7 +232,7 @@ namespace Koru1000.KepServerService.Services
                 // Küçük delay - aynı anda 100 client açılmasın
                 if (i % 5 == 0 && i > 0) // Her 5 client'ta bir 500ms delay
                 {
-                    await Task.Delay(500);
+                    await Task.Delay(100);
                 }
             }
 
@@ -365,7 +365,7 @@ namespace Koru1000.KepServerService.Services
                     return;
                 }
 
-                await Task.Delay(checkIntervalMs);
+                //await Task.Delay(checkIntervalMs);
             }
 
             _logger.LogWarning($"⚠️ Client {clientId}: Subscription {maxWaitSeconds}s içinde aktif olmadı");
@@ -419,6 +419,7 @@ namespace Koru1000.KepServerService.Services
                 await testClient.StartAsync();
 
                 // 10 saniye veri bekle
+                
                 await Task.Delay(10000);
 
                 var status = await testClient.GetStatusAsync();

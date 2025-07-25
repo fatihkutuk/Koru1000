@@ -1,38 +1,40 @@
-﻿// Program.cs
+﻿// Koru1000.KepServerService/Program.cs
+using Koru1000.Core.Models.OpcModels;
+using Koru1000.DatabaseManager;
 using Koru1000.KepServerService;
 using Koru1000.KepServerService.Services;
-using Koru1000.Core.Models.OpcModels;
-using Koru1000.Core.Models;
 using Koru1000.Shared;
 
 var builder = Host.CreateApplicationBuilder(args);
 
-// Settings'i yükle
-var settings = SettingsManager.LoadSettings();
+// Logging yapılandırması
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
 
-// DatabaseManager'ı register et
-builder.Services.AddSingleton(provider =>
-    Koru1000.DatabaseManager.DatabaseManager.Instance(
-        settings.Database.GetExchangerConnectionString(),
-        settings.Database.GetKbinConnectionString()));
+// Windows Service desteği
+//builder.Services.AddWindowsService(options =>
+//{
+//    options.ServiceName = "Koru1000 KepServer Service";
+//});
 
-// ✅ Default ClientLimits register et (driver-specific olanlar runtime'da override edilecek)
-builder.Services.AddSingleton<ClientLimits>(provider => new ClientLimits
+// Configuration
+var config = new OpcServiceConfig
 {
-    MaxTagsPerSubscription = 20000, // Default değerler
-    MaxChannelsPerSession = 50,
-    MaxDevicesPerSession = 50,
-    MaxSubscriptionsPerSession = 10,
-    PublishingIntervalMs = 1000,
-    MaxNotificationsPerPublish = 10000,
-    SessionTimeoutMs = 300000,
-    ReconnectDelayMs = 5000,
-    MaxReconnectAttempts = 5
-});
+    ServiceName = "Koru1000 KepServer Service",
+    MaxConcurrentDrivers = 10,
+    StatusCheckIntervalSeconds = 60,
+    Limits = new ClientLimits
+    {
+        MaxTagsPerSubscription = 3000, // Bu değeri 3000'e düşür test için
+        PublishingIntervalMs = 1000,
+        MaxNotificationsPerPublish = 5000,
+        SessionTimeoutMs = 300000,
+        ReconnectDelayMs = 5000
+    }
+};
 
-// Diğer service'leri register et
-builder.Services.AddSingleton<ISharedQueueService, SharedQueueService>();
-builder.Services.AddSingleton<KepServerClientPool>();
+builder.Services.AddSingleton(config);
 builder.Services.AddHostedService<Worker>();
 
 var host = builder.Build();

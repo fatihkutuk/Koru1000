@@ -150,21 +150,19 @@ namespace Koru1000.KepServerService.Clients
                     AddAppCertToTrustedStore = true
                 },
 
+                // CreateSessionAsync metodunda
                 TransportQuotas = new TransportQuotas
                 {
-                    OperationTimeout = 60000, // ✅ 15000'den 60000'e artır (60 saniye)
-                    MaxStringLength = 1048576,
-                    MaxByteStringLength = 1048576,
-                    MaxArrayLength = 65535,
-                    MaxMessageSize = 8388608, // ✅ Artır
-                    MaxBufferSize = 131072,   // ✅ Artır
-                    ChannelLifetime = 300000,
-                    SecurityTokenLifetime = 3600000
+                    OperationTimeout = 300000, // 5 DAKİKA
+                    MaxStringLength = 4194304, // 4MB
+                    MaxByteStringLength = 4194304, // 4MB
+                    MaxArrayLength = 262144, // 256K
+                    MaxMessageSize = 33554432, // 32MB
+                    MaxBufferSize = 524288 // 512KB
                 },
-
                 ClientConfiguration = new ClientConfiguration
                 {
-                    DefaultSessionTimeout = _limits.SessionTimeoutMs
+                    DefaultSessionTimeout = 600000 // 10 DAKİKA
                 },
 
                 TraceConfiguration = new TraceConfiguration()
