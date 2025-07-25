@@ -29,7 +29,7 @@
         public int GroupDeadband { get; set; } = 0;
         public int SessionTimeout { get; set; } = 600000;  // 10 dakika
         public int PublishingInterval { get; set; } = 2000;  // 2 saniye
-        public int MaxTagsPerSubscription { get; set; } = 10000;  // ✅ Yeni - Config'den gelecek
+        public int MaxTagsPerSubscription { get; set; } = 25000;  // ✅ Yeni - Config'den gelecek
         public int ReconnectDelay { get; set; } = 5000;
         public int MaxReconnectAttempts { get; set; } = 5;
 

@@ -141,15 +141,14 @@ namespace Koru1000.KepServerService.Services
         // ✅ Helper Method: Subscription aktif mi kontrol et
         // ✅ SEQUENTIAL (Sıralı) Başlatma Method
         private async Task<List<OpcClient>> StartClientsSequentialAsync(
-            OpcDriverInfo driverInfo,
-            List<List<OpcTagInfo>> clientGroups,
-            ClientLimits limits,
-            EnhancedDriverConfig config)
+    OpcDriverInfo driverInfo,
+    List<List<OpcTagInfo>> clientGroups,
+    ClientLimits limits,
+    EnhancedDriverConfig config)
         {
             var driverClients = new List<OpcClient>();
-            var successfulClients = 0;
 
-            _logger.LogInformation($"🐢 SEQUENTIAL başlatma - Her client sırayla: {clientGroups.Count} client");
+            _logger.LogInformation($"🐢 SEQUENTIAL başlatma - {clientGroups.Count} client sırayla");
 
             for (int i = 0; i < clientGroups.Count; i++)
             {
@@ -163,16 +162,15 @@ namespace Koru1000.KepServerService.Services
                     var opcClient = await CreateAndStartClientAsync(clientId, driverInfo, clientTags, limits);
                     driverClients.Add(opcClient);
 
-                    if (config.WaitForData)
-                    {
-                        await WaitForSubscriptionActive(opcClient, clientId);
-                        await WaitForFirstData(opcClient, clientId);
-                    }
+                    // ✅ Eski kodunuzdaki gibi - session oluştuktan sonra kısa bekle
+                    await Task.Delay(2000); // 2 saniye session için
 
-                    successfulClients++;
-                    _logger.LogInformation($"✅ Client {clientId} aktif");
+                    // ✅ Subscription aktif olana kadar bekle
+                    await WaitForSubscriptionReady(opcClient, clientId);
 
-                    // Delay
+                    _logger.LogInformation($"✅ Client {clientId} hazır ve aktif");
+
+                    // ✅ Sonraki client için delay (KEP Server yükünü azalt)
                     if (i < clientGroups.Count - 1)
                     {
                         await Task.Delay(config.ClientStartDelay);
@@ -184,10 +182,33 @@ namespace Koru1000.KepServerService.Services
                 }
             }
 
-            _logger.LogInformation($"🎯 Sequential tamamlandı: {successfulClients}/{clientGroups.Count} client başarılı");
+            _logger.LogInformation($"🎯 Sequential completed: {driverClients.Count}/{clientGroups.Count} başarılı");
             return driverClients;
         }
+        // ✅ Subscription hazır mı kontrol - eski kod mantığı
+        private async Task WaitForSubscriptionReady(OpcClient opcClient, int clientId)
+        {
+            const int maxWaitSeconds = 30;
+            const int checkIntervalMs = 1000;
 
+            for (int i = 0; i < maxWaitSeconds; i++)
+            {
+                try
+                {
+                    var status = await opcClient.GetStatusAsync();
+                    if (status.ActiveSubscriptions > 0 && status.TotalTagsSubscribed > 0)
+                    {
+                        _logger.LogInformation($"✅ Client {clientId}: Subscription READY ({status.TotalTagsSubscribed} tags, {i + 1}s)");
+                        return;
+                    }
+                }
+                catch { }
+
+                await Task.Delay(checkIntervalMs);
+            }
+
+            _logger.LogWarning($"⚠️ Client {clientId}: Subscription {maxWaitSeconds}s içinde hazır olmadı");
+        }
         // ✅ PARALLEL (Paralel) Başlatma Method  
         private async Task<List<OpcClient>> StartClientsParallelAsync(
             OpcDriverInfo driverInfo,
@@ -542,17 +563,15 @@ namespace Koru1000.KepServerService.Services
 
         // Private Helper Methods
         // KepServerClientPool.cs - LoadDriverTagsAsync methodunu tamamen değiştirin
+        // KepServerClientPool.cs - LoadDriverTagsAsync - SQL'i düzeltin
         private async Task<List<OpcTagInfo>> LoadDriverTagsAsync(int driverId)
         {
             try
             {
-                // ✅ Sizin çalışan sorgunuzu kullanın
+                // ✅ DOĞRU SQL - Sizin verdiğiniz gibi
                 const string sql = @"
             SELECT dtt.id AS DeviceTagId, d.channelName AS ChannelName, CONCAT(d.id) AS DeviceName, 
                    JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""common.ALLTYPES_NAME""')) AS TagName,
-                   JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""servermain.TAG_ADDRESS""')) AS TagAddress,
-                   JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""servermain.TAG_DATA_TYPE""')) AS DataType,
-                   JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""servermain.TAG_READ_WRITE_ACCESS""')) AS IsWritable,
                    d.id as DeviceId
             FROM channeldevice d
             INNER JOIN devicetypetag dtt ON dtt.deviceTypeId = d.deviceTypeId
@@ -562,21 +581,18 @@ namespace Koru1000.KepServerService.Services
             
             SELECT dit.id AS DeviceTagId, d.channelName AS ChannelName, CONCAT(d.id) AS DeviceName, 
                    JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""common.ALLTYPES_NAME""')) AS TagName,
-                   JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""servermain.TAG_ADDRESS""')) AS TagAddress,
-                   JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""servermain.TAG_DATA_TYPE""')) AS DataType,
-                   JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""servermain.TAG_READ_WRITE_ACCESS""')) AS IsWritable,
                    d.id as DeviceId
             FROM channeldevice d
             INNER JOIN deviceindividualtag dit ON dit.channelDeviceId = d.id
             WHERE d.driverId = @DriverId AND d.statusCode IN (11,31,41,61)
-            ORDER BY ChannelName, DeviceName, TagName";
+            ORDER BY ChannelName, DeviceName, TagName"; // ✅ ORDER BY EKLE
 
                 var results = await _dbManager.QueryExchangerAsync<dynamic>(sql, new { DriverId = driverId });
 
                 _logger.LogInformation($"🔍 SQL sorgusu {results.Count()} kayıt döndürdü - Driver: {driverId}");
 
                 var tags = new List<OpcTagInfo>();
-                foreach (var result in results)
+                foreach (var result in results) // ✅ SINIR KALDIRIN
                 {
                     try
                     {
@@ -586,21 +602,11 @@ namespace Koru1000.KepServerService.Services
 
                         if (string.IsNullOrEmpty(tagName) || string.IsNullOrEmpty(channelName) || string.IsNullOrEmpty(deviceName))
                         {
-                            _logger.LogWarning($"⚠️ Eksik veri atlanıyor - Channel: {channelName}, Device: {deviceName}, Tag: {tagName}");
                             continue;
                         }
 
-                        // ✅ Driver config'inden namespace ve format al
-                        var driverInfo = _driverInfos.GetValueOrDefault(driverId);
-                        var namespace_ = driverInfo?.Namespace ?? "2";
-                        var addressFormat = driverInfo?.AddressFormat ?? "ns={namespace};s={channelName}.{deviceName}.{tagName}";
-
-                        // ✅ NodeID formatını driver config'ine göre oluştur
-                        string nodeId = addressFormat
-                            .Replace("{namespace}", namespace_)
-                            .Replace("{channelName}", channelName)
-                            .Replace("{deviceName}", deviceName)
-                            .Replace("{tagName}", tagName);
+                        // NodeID: ns=2;s=ChannelName.DeviceName.TagName
+                        string nodeId = $"ns=2;s={channelName}.{deviceName}.{tagName}";
 
                         // Debug - İlk 5 NodeID'yi göster
                         if (tags.Count < 5)
@@ -616,29 +622,18 @@ namespace Koru1000.KepServerService.Services
                             ChannelName = channelName,
                             TagName = tagName,
                             NodeId = nodeId,
-                            DataType = Convert.ToString(result.DataType) ?? "",
-                            IsWritable = result.IsWritable != null && result.IsWritable.ToString() != "0",
-                            TagAddress = Convert.ToString(result.TagAddress) ?? ""
+                            DataType = "", // Gerekirse daha sonra ekleyin
+                            IsWritable = false, // Gerekirse daha sonra ekleyin
+                            TagAddress = ""
                         });
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, $"❌ Tag oluşturma hatası: {ex.Message}");
+                        _logger.LogError(ex, $"❌ Tag oluşturma hatası");
                     }
                 }
 
                 _logger.LogInformation($"✅ Driver {driverId} için {tags.Count} tag başarıyla yüklendi");
-
-                // İlk birkaç tag'in detayını göster
-                if (tags.Any())
-                {
-                    _logger.LogInformation($"📋 Örnek tag'ler:");
-                    foreach (var tag in tags.Take(3))
-                    {
-                        _logger.LogInformation($"   • {tag.NodeId} ({tag.ChannelName}.{tag.DeviceId}.{tag.TagName})");
-                    }
-                }
-
                 return tags;
             }
             catch (Exception ex)

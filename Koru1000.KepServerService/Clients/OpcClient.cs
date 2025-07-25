@@ -11,6 +11,8 @@ namespace Koru1000.KepServerService.Clients
 {
     public class OpcClient : IDisposable
     {
+        private static ApplicationConfiguration? _sharedConfig;
+        private static readonly object _configLock = new object();
         public long TotalMessagesReceived => _totalMessagesReceived;
 
         private readonly int _clientId;
@@ -110,16 +112,15 @@ namespace Koru1000.KepServerService.Clients
         }
 
         // OpcClient.cs - CreateApplicationConfigurationAsync methodunu tamamen değiştirin
+        // OpcClient.cs - CreateApplicationConfigurationAsync - TAMAMEN DEĞİŞTİR
         private async Task CreateApplicationConfigurationAsync()
         {
-            // ✅ Driver-level shared certificate
             var driverCertificateName = $"CN=Koru1000 Driver {_driverInfo.DriverId}, C=US, S=Arizona, O=OPC Foundation, DC=" + Utils.GetHostName();
 
             _config = new ApplicationConfiguration()
             {
-                // ✅ Driver seviyesinde shared application identity
-                ApplicationName = $"Koru1000 Driver {_driverInfo.DriverId} - {_driverInfo.DriverName}",
-                ApplicationUri = $"urn:localhost:Koru1000:Driver:{_driverInfo.DriverId}", // Client ID yok!
+                ApplicationName = $"Koru1000 Driver {_driverInfo.DriverId} Client {_clientId}",
+                ApplicationUri = $"urn:localhost:Koru1000:Driver:{_driverInfo.DriverId}:Client:{_clientId}",
                 ApplicationType = ApplicationType.Client,
 
                 SecurityConfiguration = new SecurityConfiguration
@@ -128,7 +129,6 @@ namespace Koru1000.KepServerService.Clients
                     {
                         StoreType = @"Directory",
                         StorePath = @"%LocalApplicationData%\OPC Foundation\pki\own",
-                        // ✅ Driver-specific certificate subject
                         SubjectName = driverCertificateName
                     },
                     TrustedIssuerCertificates = new CertificateTrustList
@@ -152,12 +152,12 @@ namespace Koru1000.KepServerService.Clients
 
                 TransportQuotas = new TransportQuotas
                 {
-                    OperationTimeout = 15000,
+                    OperationTimeout = 60000, // ✅ 15000'den 60000'e artır (60 saniye)
                     MaxStringLength = 1048576,
                     MaxByteStringLength = 1048576,
                     MaxArrayLength = 65535,
-                    MaxMessageSize = 4194304,
-                    MaxBufferSize = 65535,
+                    MaxMessageSize = 8388608, // ✅ Artır
+                    MaxBufferSize = 131072,   // ✅ Artır
                     ChannelLifetime = 300000,
                     SecurityTokenLifetime = 3600000
                 },
@@ -170,35 +170,35 @@ namespace Koru1000.KepServerService.Clients
                 TraceConfiguration = new TraceConfiguration()
             };
 
-            // ✅ Certificate validation - Tüm certificate'ları kabul et
+            // ✅ Certificate validation - tüm certificate'ları kabul et
             _config.CertificateValidator.CertificateValidation += (s, e) => {
-                _logger.LogDebug("Driver {DriverId} Client {ClientId} Certificate AUTO ACCEPTED: {Subject}",
-                    _driverInfo.DriverId, _clientId, e.Certificate?.Subject ?? "Unknown");
+                _logger.LogDebug("Certificate AUTO ACCEPTED: {Subject}", e.Certificate?.Subject ?? "Unknown");
                 e.Accept = true;
             };
+
+            // ✅ Certificate validation ayarı
+            await _config.Validate(ApplicationType.Client);
 
             try
             {
                 var applicationInstance = new ApplicationInstance(_config);
 
-                // ✅ Certificate check - Sadece ilk client yapsın
-                bool certificateValid = await applicationInstance.CheckApplicationInstanceCertificates(false, 0);
+                // ✅ Certificate oluştur/kontrol et
+                bool certificateValid = await applicationInstance.CheckApplicationInstanceCertificates(false, 240);
 
                 if (!certificateValid)
                 {
-                    _logger.LogWarning("Driver {DriverId} Client {ClientId} Certificate invalid, continuing...",
-                        _driverInfo.DriverId, _clientId);
+                    _logger.LogWarning("Certificate invalid for Client {ClientId}, but continuing...", _clientId);
                 }
                 else
                 {
-                    _logger.LogInformation("Driver {DriverId} Client {ClientId} Using shared certificate: {Subject}",
-                        _driverInfo.DriverId, _clientId, driverCertificateName);
+                    _logger.LogDebug("Certificate valid for Client {ClientId}: {Subject}", _clientId, driverCertificateName);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Driver {DriverId} Client {ClientId} Certificate setup warning, continuing...",
-                    _driverInfo.DriverId, _clientId);
+                _logger.LogWarning(ex, "Certificate setup warning for Client {ClientId}, continuing...", _clientId);
+                // Devam et, certificate hatası olsa bile
             }
         }
 
@@ -272,30 +272,40 @@ namespace Koru1000.KepServerService.Clients
             _logger.LogInformation("Client {ClientId} subscription created", _clientId);
         }
 
+        // OpcClient.cs - CreateMonitoredItemsAsync - BATCH EKLEYİN
         private async Task CreateMonitoredItemsAsync()
         {
-            foreach (var tag in _tags)
-            {
-                try
-                {
-                    var monitoredItem = new MonitoredItem(_subscription.DefaultItem)
-                    {
-                        DisplayName = $"{tag.ChannelName}.{tag.DeviceId}.{tag.TagName}",
-                        StartNodeId = tag.NodeId,
-                        AttributeId = Attributes.Value,
-                        MonitoringMode = MonitoringMode.Reporting,
-                        SamplingInterval = _driverInfo.ConnectionSettings.PublishingInterval,
-                        QueueSize = 1,
-                        DiscardOldest = true,
-                        Handle = tag // Handle'da tag bilgisini sakla
-                    };
+            const int batchSize = 1000; // ✅ BATCH SIZE EKLE
 
-                    _monitoredItems.Add(monitoredItem);
-                }
-                catch (Exception ex)
+            for (int i = 0; i < _tags.Count; i += batchSize)
+            {
+                var batch = _tags.Skip(i).Take(batchSize);
+
+                foreach (var tag in batch)
                 {
-                    _logger.LogError(ex, "Client {ClientId} failed to create monitored item for tag: {NodeId}", _clientId, tag.NodeId);
+                    try
+                    {
+                        var monitoredItem = new MonitoredItem(_subscription.DefaultItem)
+                        {
+                            DisplayName = $"{tag.ChannelName}.{tag.DeviceId}.{tag.TagName}",
+                            StartNodeId = tag.NodeId,
+                            AttributeId = Attributes.Value,
+                            MonitoringMode = MonitoringMode.Reporting,
+                            SamplingInterval = _driverInfo.ConnectionSettings.PublishingInterval,
+                            QueueSize = 1,
+                            DiscardOldest = true,
+                            Handle = tag
+                        };
+
+                        _monitoredItems.Add(monitoredItem);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to create monitored item for tag: {NodeId}", tag.NodeId);
+                    }
                 }
+
+                _logger.LogInformation($"Created batch {i / batchSize + 1}: {batch.Count()} monitored items");
             }
 
             _logger.LogInformation("Client {ClientId} created {Count} monitored items", _clientId, _monitoredItems.Count);

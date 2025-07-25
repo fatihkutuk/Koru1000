@@ -4,6 +4,7 @@ using Koru1000.KepServerService.Services;
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Koru1000.Core.Models.ExchangerModels;
 
 namespace Koru1000.KepServerService
 {
@@ -119,6 +120,7 @@ namespace Koru1000.KepServerService
             }
         }
 
+        // Worker.cs - ParseDriverInfoAsync methodunda EKLE:
         private async Task<OpcDriverInfo?> ParseDriverInfoAsync(dynamic driverData)
         {
             try
@@ -127,15 +129,24 @@ namespace Koru1000.KepServerService
                 var driverName = Convert.ToString(driverData.name) ?? "Unknown";
                 var customSettingsJson = driverData.customSettings?.ToString();
 
-                // Enhanced Driver Config Parsing
                 var driverConfig = ParseEnhancedDriverConfig(customSettingsJson);
+
+                // ✅ EKSIK OLAN SATIRI EKLE
+                var channelTypeIds = await GetDriverChannelTypeIdsAsync(driverId);
+
+                // ✅ CustomSettings dictionary'sine strategy ayarlarını ekle
+                var customSettings = new Dictionary<string, object>
+                {
+                    ["startupStrategy"] = driverConfig.StartupStrategy.ToString().ToLower(),
+                    ["waitForData"] = driverConfig.WaitForData,
+                    ["clientStartDelay"] = driverConfig.ClientStartDelay,
+                    ["endpointUrl"] = driverConfig.EndpointUrl
+                };
 
                 _logger.LogInformation($"🔧 Driver Config: {driverName} - Endpoint: {driverConfig.EndpointUrl}, " +
                     $"Security: {driverConfig.Security.Mode}, MaxTags: {driverConfig.ConnectionSettings.MaxTagsPerSubscription}, " +
                     $"PublishingInterval: {driverConfig.ConnectionSettings.PublishingInterval}ms, " +
                     $"SessionTimeout: {driverConfig.ConnectionSettings.SessionTimeout}ms");
-
-                var channelTypeIds = await GetDriverChannelTypeIdsAsync(driverId);
 
                 var driverInfo = new OpcDriverInfo
                 {
@@ -144,8 +155,8 @@ namespace Koru1000.KepServerService
                     DriverType = "KEPSERVEREX",
                     EndpointUrl = driverConfig.EndpointUrl,
                     IsEnabled = true,
-                    CustomSettings = new Dictionary<string, object>(),
-                    ChannelTypeIds = channelTypeIds,
+                    CustomSettings = customSettings, // ✅ Strategy ayarları burada
+                    ChannelTypeIds = channelTypeIds, // ✅ Artık tanımlı
                     Namespace = driverConfig.Namespace,
                     ProtocolType = driverConfig.ProtocolType,
                     AddressFormat = driverConfig.AddressFormat,
