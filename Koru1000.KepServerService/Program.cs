@@ -20,5 +20,5 @@ builder.Services.AddSingleton<KepServerClientPool>();
 
 builder.Services.AddHostedService<Worker>();
 
- upadtedvar host = builder.Build();
+ var host = builder.Build();
 host.Run();
