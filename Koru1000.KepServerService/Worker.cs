@@ -2,6 +2,8 @@
 using Koru1000.Core.Models.OpcModels;
 using Koru1000.KepServerService.Services;
 using System.Text.Json;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Koru1000.KepServerService
 {
@@ -72,12 +74,12 @@ namespace Koru1000.KepServerService
             try
             {
                 const string sql = @"
-                    SELECT DISTINCT d.id, d.name, d.customSettings, dt.name as driverTypeName
-                    FROM driver d
-                    INNER JOIN drivertype dt ON d.driverTypeId = dt.id
-                    INNER JOIN driver_channeltype_relation dcr ON d.id = dcr.driverId
-                    WHERE dt.name = 'KEPSERVEREX'
-                    ORDER BY d.id";
+            SELECT DISTINCT d.id, d.name, d.customSettings, dt.name as driverTypeName
+            FROM driver d
+            INNER JOIN drivertype dt ON d.driverTypeId = dt.id
+            INNER JOIN driver_channeltype_relation dcr ON d.id = dcr.driverId
+            WHERE dt.name = 'KEPSERVEREX'
+            ORDER BY d.id";
 
                 var drivers = await _dbManager.QueryExchangerAsync<dynamic>(sql);
                 var driverCount = drivers.Count();
@@ -85,25 +87,26 @@ namespace Koru1000.KepServerService
 
                 foreach (var driver in drivers)
                 {
-                    // ✅ Dynamic cast düzeltmeleri
-                    var driverId = (int)driver.id;
-                    var driverName = (string)driver.name;
+                    // ✅ DÜZELTME - Dynamic'leri hemen cast edin
+                    var driverId = Convert.ToInt32(driver.id);
+                    var driverName = Convert.ToString(driver.name) ?? "Unknown";
+                    var driverTypeName = Convert.ToString(driver.driverTypeName) ?? "Unknown";
 
-                    _logger.LogInformation("🔧 Driver ID: {DriverId}, Name: {DriverName}", driverId, driverName);
+                    _logger.LogInformation( $"🔧 Driver ID: {driverId}, Name: {driverName}");
 
                     // Fast tag loading
-                    _logger.LogInformation("⚡ Fast loading tags for driver {DriverId}", driverId);
+                    _logger.LogInformation($"⚡ Fast loading tags for driver {driverId}");
                     var startTime = DateTime.Now;
 
                     var driverInfo = await ParseDriverInfoAsync(driver);
                     if (driverInfo != null)
                     {
                         var loadTime = DateTime.Now - startTime;
-                        _logger.LogInformation("✅ Tags loaded in {LoadTime}ms", loadTime.TotalMilliseconds);
+                        _logger.LogInformation($"✅ Tags loaded in {(int)loadTime.TotalMilliseconds}ms");
 
                         // Client Pool ile başlat (çoklu client)
                         await _clientPool.StartAsync(driverInfo);
-                        _logger.LogInformation("🏊‍♂️ Driver Client Pool başlatıldı: {DriverName}", driverInfo.DriverName);
+                        _logger.LogInformation($"🏊‍♂️ Driver Client Pool başlatıldı: {driverInfo.DriverName}");
                     }
                 }
 
@@ -120,15 +123,16 @@ namespace Koru1000.KepServerService
         {
             try
             {
-                int driverId = (int)driverData.id;
-                string driverName = (string)driverData.name;
-                string? customSettingsJson = driverData.customSettings?.ToString();
+                // ✅ DÜZELTME - Dynamic'leri hemen explicit cast edin
+                var driverId = Convert.ToInt32(driverData.id);
+                var driverName = Convert.ToString(driverData.name) ?? "Unknown";
+                var customSettingsJson = driverData.customSettings?.ToString();
 
                 // Enhanced Driver Config Parsing - Senin JSON config'ine göre
                 var driverConfig = ParseEnhancedDriverConfig(customSettingsJson);
 
-                _logger.LogInformation("🔧 Driver Config: {DriverName} - Endpoint: {EndpointUrl}, Security: {SecurityMode}, MaxTags: {MaxTags}",
-                    driverName, driverConfig.EndpointUrl, driverConfig.Security.Mode, driverConfig.ConnectionSettings.MaxTagsPerSubscription);
+                _logger.LogInformation($"🔧 Driver Config: {driverName} - Endpoint: {driverConfig.EndpointUrl}, " +
+                    $"Security: {driverConfig.Security.Mode}, MaxTags: {driverConfig.ConnectionSettings.MaxTagsPerSubscription}");
 
                 var channelTypeIds = await GetDriverChannelTypeIdsAsync(driverId);
 
@@ -139,7 +143,7 @@ namespace Koru1000.KepServerService
                     DriverType = "KEPSERVEREX",
                     EndpointUrl = driverConfig.EndpointUrl,
                     IsEnabled = true,
-                    CustomSettings = new Dictionary<string, object>(), // Config'den dolu gelecek
+                    CustomSettings = new Dictionary<string, object>(),
                     ChannelTypeIds = channelTypeIds,
                     Namespace = driverConfig.Namespace,
                     ProtocolType = driverConfig.ProtocolType,
@@ -153,8 +157,8 @@ namespace Koru1000.KepServerService
             }
             catch (Exception ex)
             {
-                var driverName = driverData.name?.ToString() ?? "Unknown";
-                _logger.LogError(ex, "❌ Driver info parse edilemedi: {DriverName}", driverName);
+                var driverNameSafe = Convert.ToString(driverData.name) ?? "Unknown";
+                _logger.LogError(ex, $"❌ Driver info parse edilemedi: {driverNameSafe}");
                 return null;
             }
         }
