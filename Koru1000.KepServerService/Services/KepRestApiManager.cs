@@ -27,8 +27,8 @@ public class KepRestApiManager : IKepRestApiManager
     public KepRestApiManager(ILogger<KepRestApiManager> logger)
     {
         _logger = logger;
-        _baseUrl = "http://localhost:57412/config/v1/project/_channels"; // KEP Server default
-        _credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes("administrator:")); // Username:Password
+        _baseUrl = "http://127.0.0.1:57412/config/v1/project/channels";
+        _credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes("administrator:Envest789.Korusu123"));
 
         _httpClient = new HttpClient();
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", _credentials);
@@ -42,7 +42,7 @@ public class KepRestApiManager : IKepRestApiManager
             var content = new StringContent(channelJson, Encoding.UTF8, "application/json");
             var response = await _httpClient.PostAsync(_baseUrl, content);
 
-            await Task.Delay(25); // KEP Server için kısa bekle
+            await Task.Delay(25);
 
             if (response.IsSuccessStatusCode)
             {
@@ -72,11 +72,11 @@ public class KepRestApiManager : IKepRestApiManager
             var channelObj = JsonSerializer.Deserialize<JsonDocument>(channelJson);
             var root = channelObj.RootElement.Clone();
 
-            // FORCE_UPDATE ekle
-            var modifiedJson = JsonSerializer.Serialize(new Dictionary<string, object>
-            {
-                ["FORCE_UPDATE"] = true
-            }.Concat(root.EnumerateObject().ToDictionary(p => p.Name, p => p.Value)));
+            // FORCE_UPDATE ekle - Düzeltilmiş versiyonu
+            var originalDict = root.EnumerateObject().ToDictionary(p => p.Name, p => (object)p.Value);
+            originalDict["FORCE_UPDATE"] = true;
+
+            var modifiedJson = JsonSerializer.Serialize(originalDict);
 
             var content = new StringContent(modifiedJson, Encoding.UTF8, "application/json");
             var url = $"{_baseUrl}/{channelName}";
@@ -131,11 +131,11 @@ public class KepRestApiManager : IKepRestApiManager
             var deviceObj = JsonSerializer.Deserialize<JsonDocument>(deviceJson);
             var root = deviceObj.RootElement.Clone();
 
-            // FORCE_UPDATE ekle
-            var modifiedJson = JsonSerializer.Serialize(new Dictionary<string, object>
-            {
-                ["FORCE_UPDATE"] = true
-            }.Concat(root.EnumerateObject().ToDictionary(p => p.Name, p => p.Value)));
+            // FORCE_UPDATE ekle - Düzeltilmiş versiyonu
+            var originalDict = root.EnumerateObject().ToDictionary(p => p.Name, p => (object)p.Value);
+            originalDict["FORCE_UPDATE"] = true;
+
+            var modifiedJson = JsonSerializer.Serialize(originalDict);
 
             var content = new StringContent(modifiedJson, Encoding.UTF8, "application/json");
             var url = $"{_baseUrl}/{channelName}/devices/{deviceName}";
@@ -156,7 +156,7 @@ public class KepRestApiManager : IKepRestApiManager
     {
         try
         {
-            await Task.Delay(15000); // Eski kod gibi 15 saniye bekle
+            await Task.Delay(15000);
 
             var url = $"{_baseUrl}/{channelName}/devices/{deviceName}";
             var response = await _httpClient.DeleteAsync(url);
@@ -207,15 +207,12 @@ public class KepRestApiManager : IKepRestApiManager
     {
         try
         {
-            // Önce device'ı sil
             var deleteResult = await DeviceDeleteAsync(channelName, deviceName);
             if (deleteResult != "Success")
             {
                 return "FAILED";
             }
 
-            // Device'ı tekrar ekle
-            // Bu metod için deviceJson gerekli - şimdilik skip
             return "Success";
         }
         catch (Exception ex)
