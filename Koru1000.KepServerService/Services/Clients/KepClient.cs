@@ -258,6 +258,49 @@ public class KepClient : IDisposable
             return null;
         }
     }
+    public async Task UnsubscribeDeviceTagsAsync(int deviceId)
+    {
+        try
+        {
+            if (_subscription == null || _session?.Connected != true)
+            {
+                _logger.LogWarning($"⚠️ Client {_clientId} - Subscription veya session aktif değil");
+                return;
+            }
+
+            var itemsToRemove = new List<MonitoredItem>();
+
+            foreach (var item in _subscription.MonitoredItems)
+            {
+                if (item.Handle is KepTagInfo tagInfo && tagInfo.DeviceId == deviceId)
+                {
+                    itemsToRemove.Add(item);
+                }
+            }
+
+            if (itemsToRemove.Any())
+            {
+                _logger.LogInformation($"🔗 Client {_clientId} - Device {deviceId} için {itemsToRemove.Count} tag unsubscribe ediliyor");
+
+                _subscription.RemoveItems(itemsToRemove);
+
+                foreach (var item in itemsToRemove)
+                {
+                    _monitoredItems.TryRemove(item.ClientHandle, out _);
+                }
+
+                _logger.LogInformation($"✅ Client {_clientId} - Device {deviceId} unsubscribe tamamlandı");
+            }
+            else
+            {
+                _logger.LogInformation($"📋 Client {_clientId} - Device {deviceId} için unsubscribe edilecek tag bulunamadı");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"❌ Client {_clientId} - Device {deviceId} unsubscribe hatası");
+        }
+    }
     private async Task CreateMonitoredItemsAsync()
     {
         try

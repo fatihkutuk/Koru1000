@@ -1,4 +1,6 @@
-﻿using Koru1000.KepServerService.Models;
+﻿// Koru1000.KepServerService/Services/Interfaces/IKepClientManager.cs
+using Koru1000.KepServerService.Models;
+using Koru1000.KepServerService.Clients;
 
 namespace Koru1000.KepServerService.Services;
 
@@ -7,6 +9,10 @@ public interface IKepClientManager
     Task StartAsync();
     Task StopAsync();
     Task<List<KepClientStatus>> GetClientStatusAsync();
+    Task UnsubscribeDeviceAsync(int clientId, int deviceId);
+    Task RestartAffectedClientsAsync(int deviceId);
+    Task<KepClient?> GetClientAsync(int clientId);
+
     event EventHandler<KepDataChangedEventArgs>? DataChanged;
     event EventHandler<KepStatusChangedEventArgs>? StatusChanged;
 }

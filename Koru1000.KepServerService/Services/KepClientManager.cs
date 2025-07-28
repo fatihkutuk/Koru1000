@@ -1,4 +1,5 @@
-﻿using System.Collections.Concurrent;
+﻿// Koru1000.KepServerService/Services/KepClientManager.cs
+using System.Collections.Concurrent;
 using Koru1000.KepServerService.Models;
 using Koru1000.KepServerService.Clients;
 using Microsoft.Extensions.Logging;
@@ -82,11 +83,98 @@ public class KepClientManager : IKepClientManager
         }
     }
 
+    public async Task UnsubscribeDeviceAsync(int clientId, int deviceId)
+    {
+        try
+        {
+            if (_clients.TryGetValue(clientId, out var client))
+            {
+                await client.UnsubscribeDeviceTagsAsync(deviceId);
+                _logger.LogInformation($"✅ Client {clientId} - Device {deviceId} unsubscribed");
+            }
+            else
+            {
+                _logger.LogWarning($"⚠️ Client {clientId} bulunamadı - unsubscribe işlemi atlandı");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"❌ Unsubscribe hatası - Client: {clientId}, Device: {deviceId}");
+        }
+    }
+
+    public async Task RestartAffectedClientsAsync(int deviceId)
+    {
+        try
+        {
+            var affectedClients = await GetDeviceClientsAsync(deviceId);
+
+            if (!affectedClients.Any())
+            {
+                _logger.LogInformation($"📋 Device {deviceId} için etkilenen client bulunamadı");
+                return;
+            }
+
+            _logger.LogInformation($"🔄 Device {deviceId} için {affectedClients.Count} client restart ediliyor...");
+
+            var restartTasks = affectedClients.Select(async clientId =>
+            {
+                try
+                {
+                    if (_clients.TryGetValue(clientId, out var client))
+                    {
+                        _logger.LogInformation($"🔄 Client {clientId} restart başlatılıyor...");
+
+                        await client.StopAsync();
+                        await Task.Delay(2000);
+                        await client.StartAsync();
+
+                        _logger.LogInformation($"✅ Client {clientId} restart tamamlandı");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"❌ Client {clientId} restart hatası");
+                }
+            });
+
+            await Task.WhenAll(restartTasks);
+            _logger.LogInformation($"✅ Device {deviceId} için tüm client restart'lar tamamlandı");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"❌ RestartAffectedClients hatası - Device: {deviceId}");
+        }
+    }
+
+    public async Task<KepClient?> GetClientAsync(int clientId)
+    {
+        return _clients.TryGetValue(clientId, out var client) ? client : null;
+    }
+
+    private async Task<List<int>> GetDeviceClientsAsync(int deviceId)
+    {
+        try
+        {
+            const string sql = @"
+                SELECT DISTINCT clientId 
+                FROM channeldevice 
+                WHERE id = @DeviceId AND clientId IS NOT NULL";
+
+            var results = await _dbManager.QueryExchangerAsync<int>(sql, new { DeviceId = deviceId });
+            return results.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"GetDeviceClients hatası - Device: {deviceId}");
+            return new List<int>();
+        }
+    }
+
     private async Task LoadClientsAsync()
     {
         try
         {
-            // Aktif client'ları al
             var clientIds = await GetActiveClientIdsAsync();
             _logger.LogInformation($"Found {clientIds.Count} active clients to load");
 

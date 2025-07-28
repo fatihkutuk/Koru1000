@@ -5,6 +5,7 @@ using Serilog;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Koru1000.KepServerService.Workers;
 
 namespace Koru1000.KepServerService;
 
@@ -51,9 +52,11 @@ public class Program
             builder.Services.AddSingleton<IKepDataProcessor, KepDataProcessor>();
             builder.Services.AddSingleton<IKepServerInitializer, KepServerInitializer>();
             builder.Services.AddSingleton<IKepRestApiManager, KepRestApiManager>();
+            builder.Services.AddSingleton<IDeviceOperationManager, DeviceOperationManager>();
 
             builder.Services.AddHostedService<KepServerWorker>();
 
+            builder.Services.AddHostedService<DeviceOperationWorker>();
 
 
             var host = builder.Build();
