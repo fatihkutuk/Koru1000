@@ -1115,40 +1115,150 @@ public class KepServerInitializer : IKepServerInitializer
             _logger.LogError(ex, "💥 Doğrulama hatası");
         }
     }
+    private async Task<int> GetMaxTagsPerClientFromDriverAsync()
+    {
+        try
+        {
+            const string sql = @"
+            SELECT customSettings 
+            FROM driver 
+            WHERE id = (SELECT DISTINCT driverId FROM channeldevice WHERE driverId IS NOT NULL LIMIT 1)";
 
+            var customSettings = await _dbManager.QueryFirstExchangerAsync<string>(sql);
+
+            if (!string.IsNullOrEmpty(customSettings))
+            {
+                var settings = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(customSettings);
+                if (settings != null && settings.ContainsKey("maxTagsPerClient"))
+                {
+                    var maxTags = Convert.ToInt32(settings["maxTagsPerClient"]);
+                    _logger.LogInformation($"📄 Driver customSettings'den alınan maxTagsPerClient: {maxTags}");
+                    return maxTags;
+                }
+            }
+
+            _logger.LogWarning("Driver customSettings'den maxTagsPerClient okunamadı, default 30000 kullanılıyor");
+            return 30000;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Driver customSettings'den maxTagsPerClient okunamadı, default 30000 kullanılıyor");
+            return 30000;
+        }
+    }
     private async Task FixMissingClientsAsync(ClientAnalysisResult clientAnalysis)
     {
         try
         {
-            if (clientAnalysis.DevicesWithoutClient > 0)
+            // DRIVER JSON'UNDAN AL
+            var maxTagsPerClient = await GetMaxTagsPerClientFromDriverAsync();
+
+            var totalTags = await GetTotalActiveTagCountAsync();
+            var requiredClients = (int)Math.Ceiling((double)totalTags / maxTagsPerClient);
+
+            _logger.LogInformation($"📊 TAG DAĞITIM ANALİZİ:");
+            _logger.LogInformation($"   • Toplam aktif tag: {totalTags:N0}");
+            _logger.LogInformation($"   • Driver JSON'dan max tag: {maxTagsPerClient:N0}");
+            _logger.LogInformation($"   • Gerekli client sayısı: {requiredClients}");
+
+            if (requiredClients > 14)
             {
-                _logger.LogInformation($"🔧 {clientAnalysis.DevicesWithoutClient} device'ın client'ı eksik - düzeltiliyor...");
-
-                // En az yüklü client'ı bul
-                var minClient = clientAnalysis.DatabaseClients.OrderBy(c => c.DeviceCount).FirstOrDefault();
-                var targetClientId = minClient?.ClientId ?? 1;
-
-                // Toplu güncelleme - daha basit ve etkili
-                const string updateAllSql = @"
-                    UPDATE channeldevice 
-                    SET clientId = @ClientId 
-                    WHERE clientId IS NULL AND statusCode IN (11,31,41,51,61)";
-
-                var updatedRows = await _dbManager.ExecuteExchangerAsync(updateAllSql, new { ClientId = targetClientId });
-
-                _logger.LogInformation($"✅ {updatedRows} device Client {targetClientId}'a atandı");
+                _logger.LogWarning($"⚠️ {requiredClients} client gerekli ama sadece 14 client var!");
             }
-            else
-            {
-                _logger.LogInformation("✅ Tüm device'ların client'ı mevcut");
-            }
+
+            await RedistributeDevicesAsync(Math.Min(requiredClients, 14), maxTagsPerClient);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "💥 Client düzeltme hatası");
         }
     }
+    private async Task RedistributeDevicesAsync(int clientCount, int maxTagsPerClient)
+    {
+        try
+        {
+            const string sql = @"
+            SELECT 
+                cd.id as DeviceId,
+                COALESCE(
+                    (CASE WHEN dt.allTagJsons IS NOT NULL AND dt.allTagJsons != '[]' 
+                     THEN JSON_LENGTH(dt.allTagJsons) ELSE 0 END) +
+                    (CASE WHEN cd.individualTags IS NOT NULL AND cd.individualTags != '[]' 
+                     THEN JSON_LENGTH(cd.individualTags) ELSE 0 END),
+                    0
+                ) as TagCount
+            FROM channeldevice cd
+            LEFT JOIN devicetype dt ON cd.deviceTypeId = dt.id
+            WHERE cd.statusCode IN (11,31,41,51,61)
+            ORDER BY TagCount DESC";
 
+            var devices = await _dbManager.QueryExchangerAsync<dynamic>(sql);
+
+            var clientTagCounts = new int[clientCount];
+            var clientAssignments = new List<(int DeviceId, int ClientId)>();
+
+            foreach (var device in devices)
+            {
+                var deviceId = (int)device.DeviceId;
+                var tagCount = (int)device.TagCount;
+
+                var targetClientId = Array.IndexOf(clientTagCounts, clientTagCounts.Min()) + 1;
+
+                if (clientTagCounts[targetClientId - 1] + tagCount <= maxTagsPerClient)
+                {
+                    clientTagCounts[targetClientId - 1] += tagCount;
+                    clientAssignments.Add((deviceId, targetClientId));
+                }
+                else
+                {
+                    _logger.LogWarning($"⚠️ Device {deviceId} ({tagCount} tag) hiçbir client'a sığmıyor!");
+                }
+            }
+
+            foreach (var (deviceId, clientId) in clientAssignments)
+            {
+                const string updateSql = "UPDATE channeldevice SET clientId = @ClientId WHERE id = @DeviceId";
+                await _dbManager.ExecuteExchangerAsync(updateSql, new { ClientId = clientId, DeviceId = deviceId });
+            }
+
+            _logger.LogInformation($"✅ {clientAssignments.Count} device yeniden dağıtıldı");
+
+            for (int i = 0; i < clientCount; i++)
+            {
+                _logger.LogInformation($"   • Client {i + 1}: {clientTagCounts[i]:N0} tag");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Device redistribution hatası");
+        }
+    }
+    private async Task<int> GetTotalActiveTagCountAsync()
+    {
+        try
+        {
+            const string sql = @"
+            SELECT 
+                SUM(COALESCE(
+                    (CASE WHEN dt.allTagJsons IS NOT NULL AND dt.allTagJsons != '[]' 
+                     THEN JSON_LENGTH(dt.allTagJsons) ELSE 0 END) +
+                    (CASE WHEN cd.individualTags IS NOT NULL AND cd.individualTags != '[]' 
+                     THEN JSON_LENGTH(cd.individualTags) ELSE 0 END),
+                    0
+                )) as TotalTags
+            FROM channeldevice cd
+            LEFT JOIN devicetype dt ON cd.deviceTypeId = dt.id
+            WHERE cd.statusCode IN (11,31,41,51,61)";
+
+            var result = await _dbManager.QueryFirstExchangerAsync<int?>(sql);
+            return result ?? 0;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Total tag count alınamadı");
+            return 0;
+        }
+    }
     private async Task CollectFinalMetricsAsync()
     {
         try

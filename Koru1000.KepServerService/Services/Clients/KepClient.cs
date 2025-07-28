@@ -301,11 +301,208 @@ public class KepClient : IDisposable
             _logger.LogError(ex, $"❌ Client {_clientId} - Device {deviceId} unsubscribe hatası");
         }
     }
+    private void WriteTimerCallback(object? state)
+    {
+        try
+        {
+            if (!_canProcess || _session?.Connected != true) return;
+
+            _ = Task.Run(async () =>
+            {
+                await ProcessWriteRequestsAsync();
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Client {_clientId} write timer hatası");
+        }
+    }
+
+    // Yeni method ekle
+    private async Task ProcessWriteRequestsAsync()
+    {
+        try
+        {
+            // Bu client'a ait yazılacak tag'leri al
+            var writeRequests = await GetWriteRequestsForClientAsync();
+
+            if (!writeRequests.Any()) return;
+
+            var writeValues = new WriteValueCollection();
+
+            foreach (var request in writeRequests)
+            {
+                try
+                {
+                    // DeviceId'dan channel ve device ismini bul
+                    var deviceInfo = await GetDeviceInfoAsync(request.DeviceId);
+                    if (deviceInfo == null) continue;
+
+                    var nodeId = $"ns=2;s={deviceInfo.ChannelName}.{request.DeviceId}.{request.TagName}";
+
+                    var writeValue = new WriteValue
+                    {
+                        NodeId = nodeId,
+                        AttributeId = Attributes.Value,
+                        Value = new DataValue(new Variant(request.TagValue))
+                    };
+
+                    writeValues.Add(writeValue);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Write value hazırlama hatası: DeviceId={request.DeviceId}, Tag={request.TagName}");
+                }
+            }
+
+            if (writeValues.Any())
+            {
+                // OPC'ye yaz
+                _session!.Write(null, writeValues, out var results, out var diagnosticInfos);
+
+                // Başarılı yazılanları _tagyaz tablosundan sil
+                await DeleteWrittenTagsAsync(writeRequests.Where((req, index) =>
+                    index < results.Count && StatusCode.IsGood(results[index])).ToList());
+
+                _logger.LogDebug($"Client {_clientId}: {results.Count(StatusCode.IsGood)} tag yazıldı, {results.Count(r => !StatusCode.IsGood(r))} hata");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Client {_clientId} write processing hatası");
+        }
+    }
+
+    // Bu client'a ait yazma isteklerini al
+    private async Task<List<WriteRequest>> GetWriteRequestsForClientAsync()
+    {
+        try
+        {
+            const string sql = @"
+            SELECT t.devId, t.tagName, t.tagValue
+            FROM kbindb._tagyaz t
+            INNER JOIN channeldevice cd ON t.devId = cd.id
+            WHERE cd.clientId = @ClientId
+            ORDER BY t.time
+            LIMIT 100"; // Aynı anda max 100 tag yaz
+
+            var results = await _dbManager.QueryKbinAsync<dynamic>(sql, new { ClientId = _clientId });
+
+            return results.Select(r => new WriteRequest
+            {
+                DeviceId = (int)r.devId,
+                TagName = r.tagName?.ToString() ?? "",
+                TagValue = Convert.ToSingle(r.tagValue)
+            }).ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Client {_clientId} write requests alınamadı");
+            return new List<WriteRequest>();
+        }
+    }
+
+    // DeviceId'dan channel ve device bilgisini al
+    private async Task<DeviceInfo?> GetDeviceInfoAsync(int deviceId)
+    {
+        try
+        {
+            const string sql = @"
+            SELECT id as DeviceId, channelName as ChannelName
+            FROM channeldevice 
+            WHERE id = @DeviceId";
+
+            var result = await _dbManager.QueryFirstExchangerAsync<dynamic>(sql, new { DeviceId = deviceId });
+
+            if (result != null)
+            {
+                return new DeviceInfo
+                {
+                    DeviceId = (int)result.DeviceId,
+                    ChannelName = result.ChannelName?.ToString() ?? ""
+                };
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Device info alınamadı: {deviceId}");
+            return null;
+        }
+    }
+
+    // Başarıyla yazılan tag'leri sil
+    private async Task DeleteWrittenTagsAsync(List<WriteRequest> writtenRequests)
+    {
+        try
+        {
+            foreach (var request in writtenRequests)
+            {
+                const string deleteSql = @"
+                DELETE FROM kbindb._tagyaz 
+                WHERE devId = @DeviceId AND tagName = @TagName";
+
+                await _dbManager.ExecuteKbinAsync(deleteSql, new
+                {
+                    DeviceId = request.DeviceId,
+                    TagName = request.TagName
+                });
+            }
+
+            _logger.LogDebug($"Client {_clientId}: {writtenRequests.Count} yazılmış tag silindi");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Client {_clientId} yazılmış tag'ları silme hatası");
+        }
+    }
+
+    // Helper class'lar
+    public class WriteRequest
+    {
+        public int DeviceId { get; set; }
+        public string TagName { get; set; } = "";
+        public float TagValue { get; set; }
+    }
+
+    public class DeviceInfo
+    {
+        public int DeviceId { get; set; }
+        public string ChannelName { get; set; } = "";
+    }
+    private async Task<int> GetMaxTagsPerClientFromDriverAsync()
+    {
+        try
+        {
+            const string sql = @"
+            SELECT customSettings 
+            FROM driver 
+            WHERE id = (SELECT DISTINCT driverId FROM channeldevice WHERE driverId IS NOT NULL LIMIT 1)";
+
+            var connectionSettings = await _dbManager.QueryFirstExchangerAsync<string>(sql);
+
+            if (!string.IsNullOrEmpty(connectionSettings))
+            {
+                var settings = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(connectionSettings);
+                if (settings != null && settings.ContainsKey("maxTagsPerClient"))
+                {
+                    return Convert.ToInt32(settings["maxTagsPerClient"]);
+                }
+            }
+
+            return 30000;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Driver JSON'dan maxTagsPerClient okunamadı");
+            return 30000;
+        }
+    }
     private async Task CreateMonitoredItemsAsync()
     {
         try
         {
-            // Bu client'a ait tag'leri al
             var allTags = await GetClientTagsAsync();
             _logger.LogInformation($"Client {_clientId} için toplam {allTags.Count} tag bulundu");
 
@@ -315,15 +512,12 @@ public class KepClient : IDisposable
                 return;
             }
 
-            // Driver ayarlarından limit al - 15000 max
-            var driverSettings = await GetDriverSettingsAsync();
-            var maxTags = 10000;
-
+            var maxTags = await GetMaxTagsPerClientFromDriverAsync();
             var tagsToUse = allTags.Take(maxTags).ToList();
 
             if (allTags.Count > maxTags)
             {
-                _logger.LogInformation($"Client {_clientId} için {allTags.Count} tag var, ilk {maxTags} tanesi kullanılacak");
+                _logger.LogWarning($"⚠️ Client {_clientId} için {allTags.Count} tag var, sadece {maxTags} tanesi kullanılacak!");
             }
 
             var monitoredItemList = new List<MonitoredItem>();
@@ -332,15 +526,26 @@ public class KepClient : IDisposable
             {
                 try
                 {
-                    var nodeId = $"ns=2;{tag.ChannelName}.{tag.DeviceName}.{tag.TagName}";
+                    // System tag'lar için özel NodeId formatı
+                    string nodeId;
+                    if (tag.TagName.StartsWith("_"))
+                    {
+                        nodeId = $"ns=2;s={tag.ChannelName}.{tag.DeviceName}._System.{tag.TagName}";
+                    }
+                    else
+                    {
+                        nodeId = $"ns=2;{tag.ChannelName}.{tag.DeviceName}.{tag.TagName}";
+                    }
 
                     var monitoredItem = new MonitoredItem(_subscription!.DefaultItem)
                     {
-                        DisplayName = $"{tag.ChannelName}.{tag.DeviceName}.{tag.TagName}",
+                        DisplayName = tag.TagName.StartsWith("_")
+                            ? $"{tag.ChannelName}.{tag.DeviceName}._System.{tag.TagName}"
+                            : $"{tag.ChannelName}.{tag.DeviceName}.{tag.TagName}",
                         StartNodeId = nodeId,
                         AttributeId = Attributes.Value,
                         MonitoringMode = MonitoringMode.Reporting,
-                        SamplingInterval = driverSettings?.ConnectionSettings.PublishingInterval ?? 2000,
+                        SamplingInterval = 2000,
                         QueueSize = 1,
                         DiscardOldest = true,
                         Handle = tag
@@ -356,8 +561,7 @@ public class KepClient : IDisposable
             }
 
             _subscription.AddItems(monitoredItemList);
-            _logger.LogInformation("Client {ClientId} {Count} monitored item oluşturuldu (toplam {Total} tag var)",
-                _clientId, monitoredItemList.Count, allTags.Count);
+            _logger.LogInformation("Client {ClientId} {Count} monitored item oluşturuldu", _clientId, monitoredItemList.Count);
         }
         catch (Exception ex)
         {
@@ -365,16 +569,42 @@ public class KepClient : IDisposable
             throw;
         }
     }
+    private async Task<int> GetMaxTagsPerClientFromConfigAsync()
+    {
+        try
+        {
+            const string sql = @"
+            SELECT TOP 1 connectionSettings 
+            FROM driver 
+            ORDER BY id";
 
+            var result = await _dbManager.QueryFirstExchangerAsync<string>(sql);
+
+            if (!string.IsNullOrEmpty(result))
+            {
+                var settings = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(result);
+                if (settings != null && settings.ContainsKey("maxTagsPerClient"))
+                {
+                    return Convert.ToInt32(settings["maxTagsPerClient"]);
+                }
+            }
+
+            return 30000;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "MaxTagsPerClient okunamadı, default 30000 kullanılıyor");
+            return 30000;
+        }
+    }
     private async Task<List<KepTagInfo>> GetClientTagsAsync()
     {
         try
         {
             _logger.LogInformation($"🏷️ Client {_clientId} için tag'ler sorgulanıyor...");
 
-            // STORED PROCEDURE kullanarak doğru tag'leri al
-            const string sql = @"CALL sp_getClientSubscriptionList(@p_clientId)";
-
+            // Normal tag'ları al
+            const string sql = @"CALL sp_getClientSubscriptionList_NEW(@p_clientId)";
             var results = await _dbManager.QueryExchangerAsync<dynamic>(sql, new { p_clientId = _clientId });
 
             var tags = results.Where(r => !string.IsNullOrEmpty(r.TagName?.ToString()))
@@ -387,32 +617,14 @@ public class KepClient : IDisposable
                                  TagName = r.TagName ?? ""
                              }).ToList();
 
+            // SYSTEM TAG'LARINI EKLE
+            var systemTags = await GetSystemTagsForClientAsync();
+            tags.AddRange(systemTags);
+
             _logger.LogInformation($"📊 Client {_clientId} Tag İstatistikleri:");
+            _logger.LogInformation($"   • Normal tag: {tags.Count - systemTags.Count:N0}");
+            _logger.LogInformation($"   • System tag: {systemTags.Count:N0}");
             _logger.LogInformation($"   • Toplam tag: {tags.Count:N0}");
-
-            // Channel başına tag sayısı
-            var channelTagCounts = tags.GroupBy(t => t.ChannelName)
-                                      .ToDictionary(g => g.Key, g => g.Count());
-
-            _logger.LogInformation($"   • Channel sayısı: {channelTagCounts.Count}");
-            foreach (var kvp in channelTagCounts.OrderByDescending(x => x.Value).Take(5))
-            {
-                _logger.LogInformation($"     - {kvp.Key}: {kvp.Value:N0} tag");
-            }
-
-            // Beklenen 370K'dan ne kadarını alıyoruz?
-            var expectedTagsForClient = 370323 / 14; // Yaklaşık olarak
-            var percentage = (double)tags.Count / expectedTagsForClient * 100;
-
-            _logger.LogInformation($"📈 Client {_clientId} Coverage:");
-            _logger.LogInformation($"   • Beklenen (yaklaşık): {expectedTagsForClient:N0} tag");
-            _logger.LogInformation($"   • Bulunan: {tags.Count:N0} tag");
-            _logger.LogInformation($"   • Coverage: %{percentage:F1}");
-
-            if (percentage < 80)
-            {
-                _logger.LogWarning($"⚠️ Client {_clientId} düşük tag coverage - bazı device'lar eksik olabilir");
-            }
 
             return tags;
         }
@@ -715,7 +927,49 @@ public class KepClient : IDisposable
             LastError = _lastError
         });
     }
+    private async Task<List<KepTagInfo>> GetSystemTagsForClientAsync()
+    {
+        try
+        {
+            // Bu client'a ait device'ları al
+            const string deviceSql = @"
+            SELECT DISTINCT id as DeviceId, channelName as ChannelName
+            FROM channeldevice 
+            WHERE clientId = @ClientId AND statusCode IN (11,31,41,61)";
 
+            var devices = await _dbManager.QueryExchangerAsync<dynamic>(deviceSql, new { ClientId = _clientId });
+
+            var systemTags = new List<KepTagInfo>();
+
+            foreach (var device in devices)
+            {
+                var deviceId = (int)device.DeviceId;
+                var channelName = device.ChannelName?.ToString() ?? "";
+
+                // Her device için system tag'ları ekle
+                var systemTagNames = new[] { "_NoError", "_ReadError", "_WriteError", "_ConnectionStatus" };
+
+                foreach (var tagName in systemTagNames)
+                {
+                    systemTags.Add(new KepTagInfo
+                    {
+                        DeviceTagId = -1, // System tag'lar için negatif ID
+                        DeviceId = deviceId,
+                        ChannelName = channelName,
+                        DeviceName = deviceId.ToString(),
+                        TagName = tagName
+                    });
+                }
+            }
+
+            return systemTags;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"System tag'ları alınamadı: Client {_clientId}");
+            return new List<KepTagInfo>();
+        }
+    }
     private void UpdateConnectionStatus(KepConnectionStatus status, string message)
     {
         if (_connectionStatus != status)
