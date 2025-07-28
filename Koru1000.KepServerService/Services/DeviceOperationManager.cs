@@ -1,625 +1,412 @@
-﻿// Koru1000.KepServerService/Services/DeviceOperationManager.cs
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
-using System.Text.Json;
 using Koru1000.KepServerService.Models;
 
-namespace Koru1000.KepServerService.Services
+namespace Koru1000.KepServerService.Services;
+
+public interface IDeviceOperationManager
 {
-    public interface IDeviceOperationManager
+    Task StartAsync();
+    Task StopAsync();
+    Task ProcessDeviceOperationAsync(int deviceId, byte statusCode, int driverId);
+}
+
+public class DeviceOperationManager : IDeviceOperationManager
+{
+    private readonly ILogger<DeviceOperationManager> _logger;
+    private readonly Koru1000.DatabaseManager.DatabaseManager _dbManager;
+    private readonly IKepRestApiManager _restApiManager;
+    private readonly ConcurrentDictionary<int, DeviceOperationLock> _operationLocks = new();
+    private Timer? _operationTimer;
+
+    public DeviceOperationManager(
+        ILogger<DeviceOperationManager> logger,
+        Koru1000.DatabaseManager.DatabaseManager dbManager,
+        IKepRestApiManager restApiManager)
     {
-        Task StartAsync();
-        Task StopAsync();
-        event EventHandler<DeviceOperationEventArgs>? OperationCompleted;
-        event EventHandler<DeviceOperationEventArgs>? OperationFailed;
+        _logger = logger;
+        _dbManager = dbManager;
+        _restApiManager = restApiManager;
     }
 
-    public class DeviceOperationManager : IDeviceOperationManager
+    public async Task StartAsync()
     {
-        private readonly IKepRestApiManager _kepApi;
-        private readonly IKepClientManager _clientManager;
-        private readonly Koru1000.DatabaseManager.DatabaseManager _dbManager;
-        private readonly ILogger<DeviceOperationManager> _logger;
-        private readonly Timer _pollingTimer;
-        private readonly SemaphoreSlim _processingLock;
-        private readonly ConcurrentQueue<DeviceOperation> _operationQueue;
-        private volatile bool _isRunning;
-
-        public event EventHandler<DeviceOperationEventArgs>? OperationCompleted;
-        public event EventHandler<DeviceOperationEventArgs>? OperationFailed;
-
-        public DeviceOperationManager(
-            IKepRestApiManager kepApi,
-            IKepClientManager clientManager,
-            Koru1000.DatabaseManager.DatabaseManager dbManager,
-            ILogger<DeviceOperationManager> logger)
-        {
-            _kepApi = kepApi;
-            _clientManager = clientManager;
-            _dbManager = dbManager;
-            _logger = logger;
-            _processingLock = new SemaphoreSlim(1, 1);
-            _operationQueue = new ConcurrentQueue<DeviceOperation>();
-
-            _pollingTimer = new Timer(CheckPendingOperationsCallback, null, Timeout.Infinite, Timeout.Infinite);
-        }
-
-        public async Task StartAsync()
+        try
         {
             _logger.LogInformation("🚀 Device Operation Manager başlatılıyor...");
-            _isRunning = true;
 
-            await CheckPendingOperationsAsync();
-            _pollingTimer.Change(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            _operationTimer = new Timer(ProcessAllPendingOperations, null,
+                TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(5));
 
             _logger.LogInformation("✅ Device Operation Manager başlatıldı");
         }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Device Operation Manager başlatılamadı");
+            throw;
+        }
+    }
 
-        public async Task StopAsync()
+    public async Task StopAsync()
+    {
+        try
         {
             _logger.LogInformation("🛑 Device Operation Manager durduruluyor...");
-            _isRunning = false;
 
-            _pollingTimer.Change(Timeout.Infinite, Timeout.Infinite);
-            await ProcessQueuedOperations();
+            _operationTimer?.Dispose();
+            _operationTimer = null;
 
             _logger.LogInformation("✅ Device Operation Manager durduruldu");
         }
-
-        private void CheckPendingOperationsCallback(object? state)
+        catch (Exception ex)
         {
-            if (!_isRunning) return;
+            _logger.LogError(ex, "Device Operation Manager durdurulamadı");
+        }
+    }
 
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await CheckPendingOperationsAsync();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "❌ Pending operations check hatası");
-                }
-            });
+    public async Task ProcessDeviceOperationAsync(int deviceId, byte statusCode, int driverId)
+    {
+        var operationLock = new DeviceOperationLock
+        {
+            DeviceId = deviceId,
+            Status = statusCode,
+            StartTime = DateTime.Now,
+            IsProcessing = true
+        };
+
+        if (!_operationLocks.TryAdd(deviceId, operationLock))
+        {
+            _logger.LogWarning($"⚠️ Device {deviceId} için işlem zaten devam ediyor");
+            return;
         }
 
-        private async Task CheckPendingOperationsAsync()
+        try
         {
-            var pendingOps = await GetPendingOperationsAsync();
-            if (pendingOps.Any())
+            _logger.LogInformation($"🔄 İşlem başlatılıyor: Device {deviceId}, Status {statusCode}, Driver {driverId}");
+
+            // Status'e göre işlem yap
+            switch (statusCode)
             {
-                _logger.LogInformation($"📋 {pendingOps.Count} pending operation bulundu");
+                case 11: // Ekleme
+                    await AddDeviceToKepServerAsync(deviceId, driverId);
+                    break;
+                case 20: // Silme  
+                case 21: // Silme
+                    await RemoveDeviceFromKepServerAsync(deviceId, driverId);
+                    break;
+                case 31: // Güncelleme
+                case 41:
+                case 51:
+                case 61:
+                    await UpdateDeviceInKepServerAsync(deviceId, driverId);
+                    break;
+            }
 
-                foreach (var op in pendingOps)
+            // İşlem başarılı, status'u güncelle
+            await UpdateDeviceStatusAsync(deviceId, GetSuccessStatus(statusCode), driverId);
+
+            _logger.LogInformation($"✅ İşlem tamamlandı: Device {deviceId}, Status {statusCode}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"💥 İşlem başarısız: Device {deviceId}, Status {statusCode}");
+
+            // Hata durumunda status'u güncelle
+            await UpdateDeviceStatusAsync(deviceId, GetErrorStatus(statusCode), driverId);
+        }
+        finally
+        {
+            // Lock'u kaldır
+            _operationLocks.TryRemove(deviceId, out _);
+        }
+    }
+
+    private async void ProcessAllPendingOperations(object? state)
+    {
+        try
+        {
+            // Tüm bekleyen işlemleri al
+            const string sql = @"
+                SELECT cd.id, cd.statusCode, cd.driverId, cd.channelName
+                FROM channeldevice cd
+                WHERE cd.statusCode IN (11,20,21,31,41,51,61)
+                ORDER BY cd.driverId, cd.id";
+
+            var operations = await _dbManager.QueryExchangerAsync<dynamic>(sql);
+
+            var groupedByDriver = operations.GroupBy(o => (int)o.driverId);
+
+            foreach (var driverGroup in groupedByDriver)
+            {
+                var driverId = driverGroup.Key;
+
+                foreach (var operation in driverGroup)
                 {
-                    _operationQueue.Enqueue(op);
-                }
+                    var deviceId = (int)operation.id;
+                    var statusCode = (byte)operation.statusCode;
 
-                _ = Task.Run(ProcessQueuedOperations);
+                    // İşlem zaten devam ediyorsa atla
+                    if (_operationLocks.ContainsKey(deviceId))
+                    {
+                        continue;
+                    }
+
+                    // Yeni işlem başlat
+                    _ = Task.Run(() => ProcessDeviceOperationAsync(deviceId, statusCode, driverId));
+                }
             }
         }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Pending operations işlemi hatası");
+        }
+    }
 
-        private async Task<List<DeviceOperation>> GetPendingOperationsAsync()
+    private async Task AddDeviceToKepServerAsync(int deviceId, int driverId)
+    {
+        try
+        {
+            // Device bilgilerini al - DÜZELTME: QueryFirstOrDefaultExchangerAsync -> QueryFirstExchangerAsync
+            const string deviceSql = @"
+                SELECT cd.id, cd.channelName, cd.deviceJson, cd.channelJson, cd.deviceTypeId
+                FROM channeldevice cd
+                WHERE cd.id = @DeviceId AND cd.driverId = @DriverId";
+
+            var device = await _dbManager.QueryFirstExchangerAsync<dynamic>(deviceSql,
+                new { DeviceId = deviceId, DriverId = driverId });
+
+            if (device == null)
+            {
+                throw new Exception($"Device {deviceId} bulunamadı");
+            }
+
+            // Önce channel'ı oluştur/güncelle
+            if (!string.IsNullOrEmpty(device.channelJson?.ToString()))
+            {
+                await _restApiManager.CreateOrUpdateChannelAsync(driverId, device.channelName, device.channelJson.ToString());
+                await Task.Delay(200); // API delay
+            }
+
+            // Device'ı oluştur
+            if (!string.IsNullOrEmpty(device.deviceJson?.ToString()))
+            {
+                await _restApiManager.CreateOrUpdateDeviceAsync(driverId, device.channelName, deviceId.ToString(), device.deviceJson.ToString());
+                await Task.Delay(200); // API delay
+            }
+
+            // Tag'lari oluştur
+            await CreateDeviceTagsAsync(deviceId, driverId, device.channelName);
+
+            _logger.LogInformation($"✅ Device {deviceId} başarıyla KEP Server'a eklendi");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Device {deviceId} KEP Server'a eklenemedi");
+            throw;
+        }
+    }
+
+    private async Task RemoveDeviceFromKepServerAsync(int deviceId, int driverId)
+    {
+        try
+        {
+            // Device bilgilerini al - DÜZELTME: QueryFirstOrDefaultExchangerAsync -> QueryFirstExchangerAsync
+            const string deviceSql = @"
+                SELECT cd.channelName
+                FROM channeldevice cd
+                WHERE cd.id = @DeviceId AND cd.driverId = @DriverId";
+
+            var device = await _dbManager.QueryFirstExchangerAsync<dynamic>(deviceSql,
+                new { DeviceId = deviceId, DriverId = driverId });
+
+            if (device != null)
+            {
+                // Önce tag'lari sil
+                await RemoveDeviceTagsAsync(deviceId, driverId, device.channelName);
+                await Task.Delay(200);
+
+                // Device'ı sil
+                await _restApiManager.DeleteDeviceAsync(driverId, device.channelName, deviceId.ToString());
+                await Task.Delay(200);
+
+                // Channel boşsa onu da sil (opsiyonel)
+                await CheckAndRemoveEmptyChannelAsync(device.channelName, driverId);
+            }
+
+            _logger.LogInformation($"✅ Device {deviceId} başarıyla KEP Server'dan silindi");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Device {deviceId} KEP Server'dan silinemedi");
+            throw;
+        }
+    }
+
+    private async Task UpdateDeviceInKepServerAsync(int deviceId, int driverId)
+    {
+        try
+        {
+            // Önce sil sonra ekle stratejisi
+            await RemoveDeviceFromKepServerAsync(deviceId, driverId);
+            await Task.Delay(500);
+            await AddDeviceToKepServerAsync(deviceId, driverId);
+
+            _logger.LogInformation($"✅ Device {deviceId} başarıyla güncellendi");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Device {deviceId} güncellenemedi");
+            throw;
+        }
+    }
+
+    private async Task CreateDeviceTagsAsync(int deviceId, int driverId, string channelName)
+    {
+        try
+        {
+            // Device'ın tüm tag'larını al
+            const string tagSql = @"
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""common.ALLTYPES_NAME""')) as TagName,
+                       dtt.tagJson
+                FROM channeldevice cd 
+                INNER JOIN devicetypetag dtt ON dtt.deviceTypeId = cd.deviceTypeId
+                WHERE cd.id = @DeviceId AND cd.driverId = @DriverId
+                
+                UNION ALL
+                
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""common.ALLTYPES_NAME""')) as TagName,
+                       dit.tagJson
+                FROM channeldevice cd 
+                INNER JOIN deviceindividualtag dit ON dit.channelDeviceId = cd.id
+                WHERE cd.id = @DeviceId AND cd.driverId = @DriverId";
+
+            var tags = await _dbManager.QueryExchangerAsync<dynamic>(tagSql,
+                new { DeviceId = deviceId, DriverId = driverId });
+
+            foreach (var tag in tags)
+            {
+                if (!string.IsNullOrEmpty(tag.tagJson?.ToString()))
+                {
+                    await _restApiManager.CreateOrUpdateTagAsync(driverId, channelName, deviceId.ToString(), tag.TagName, tag.tagJson.ToString());
+                    await Task.Delay(50); // Tag'lar arası delay
+                }
+            }
+
+            _logger.LogDebug($"✅ Device {deviceId} için {tags.Count()} tag oluşturuldu");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Device {deviceId} tag'ları oluşturulamadı");
+        }
+    }
+
+    private async Task RemoveDeviceTagsAsync(int deviceId, int driverId, string channelName)
+    {
+        try
+        {
+            // Device'ın tüm tag'larını al
+            const string tagSql = @"
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""common.ALLTYPES_NAME""')) as TagName
+                FROM channeldevice cd 
+                INNER JOIN devicetypetag dtt ON dtt.deviceTypeId = cd.deviceTypeId
+                WHERE cd.id = @DeviceId AND cd.driverId = @DriverId
+                
+                UNION ALL
+                
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""common.ALLTYPES_NAME""')) as TagName
+                FROM channeldevice cd 
+                INNER JOIN deviceindividualtag dit ON dit.channelDeviceId = cd.id
+                WHERE cd.id = @DeviceId AND cd.driverId = @DriverId";
+
+            var tags = await _dbManager.QueryExchangerAsync<dynamic>(tagSql,
+                new { DeviceId = deviceId, DriverId = driverId });
+
+            foreach (var tag in tags)
+            {
+                await _restApiManager.DeleteTagAsync(driverId, channelName, deviceId.ToString(), tag.TagName);
+                await Task.Delay(50); // Tag'lar arası delay
+            }
+
+            _logger.LogDebug($"✅ Device {deviceId} için {tags.Count()} tag silindi");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Device {deviceId} tag'ları silinemedi");
+        }
+    }
+
+    private async Task CheckAndRemoveEmptyChannelAsync(string channelName, int driverId)
+    {
+        try
+        {
+            // Channel'da başka device var mı kontrol et
+            const string checkSql = @"
+                SELECT COUNT(*) 
+                FROM channeldevice 
+                WHERE channelName = @ChannelName 
+                  AND driverId = @DriverId 
+                  AND statusCode NOT IN (20,21,22,23)";
+
+            var deviceCount = await _dbManager.QueryFirstExchangerAsync<int>(checkSql,
+                new { ChannelName = channelName, DriverId = driverId });
+
+            if (deviceCount == 0)
+            {
+                await _restApiManager.DeleteChannelAsync(driverId, channelName);
+                _logger.LogDebug($"✅ Boş channel silindi: {channelName}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Channel {channelName} kontrol edilemedi");
+        }
+    }
+
+    private async Task UpdateDeviceStatusAsync(int deviceId, byte newStatus, int driverId)
+    {
+        try
         {
             const string sql = @"
-                SELECT cd.id as DeviceId, cd.channelName as ChannelName, 
-                       cd.statusCode, cd.deviceJson, cd.channelJson,
-                       cd.deviceTypeId, cd.updateTime
-                FROM channeldevice cd
-                WHERE cd.statusCode IN (10,20,30,40,50,60)
-                AND cd.updateTime > DATE_SUB(NOW(), INTERVAL 1 HOUR)
-                ORDER BY cd.updateTime ASC";
+                UPDATE channeldevice 
+                SET statusCode = @NewStatus 
+                WHERE id = @DeviceId AND driverId = @DriverId";
 
-            var results = await _dbManager.QueryExchangerAsync<dynamic>(sql);
-
-            return results.Select(r => new DeviceOperation
-            {
-                DeviceId = (int)r.DeviceId,
-                ChannelName = r.ChannelName ?? "",
-                StatusCode = (byte)r.statusCode,
-                DeviceJson = r.deviceJson ?? "{}",
-                ChannelJson = r.channelJson ?? "{}",
-                DeviceTypeId = r.deviceTypeId ?? 0,
-                UpdateTime = r.updateTime
-            }).ToList();
+            await _dbManager.ExecuteExchangerAsync(sql,
+                new { NewStatus = newStatus, DeviceId = deviceId, DriverId = driverId });
         }
-
-        private async Task ProcessQueuedOperations()
+        catch (Exception ex)
         {
-            await _processingLock.WaitAsync();
-            try
-            {
-                while (_operationQueue.TryDequeue(out var operation))
-                {
-                    await ProcessSingleOperation(operation);
-                    await Task.Delay(500);
-                }
-            }
-            finally
-            {
-                _processingLock.Release();
-            }
+            _logger.LogError(ex, $"Device {deviceId} status güncellenemedi");
         }
+    }
 
-        private async Task ProcessSingleOperation(DeviceOperation operation)
+    private byte GetSuccessStatus(byte operationStatus)
+    {
+        return operationStatus switch
         {
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            11 => 12, // Ekleme başarılı
+            20 => 22, // Silme başarılı
+            21 => 22, // Silme başarılı
+            31 => 32, // Güncelleme başarılı
+            41 => 42,
+            51 => 52,
+            61 => 62,
+            _ => 12
+        };
+    }
 
-            try
-            {
-                _logger.LogInformation($"🔄 İşlem başlatılıyor: Device {operation.DeviceId}, Status {operation.StatusCode}");
-
-                var result = operation.StatusCode switch
-                {
-                    DeviceStatusCodes.ADD_PENDING => await HandleAddDeviceAsync(operation),
-                    DeviceStatusCodes.DELETE_PENDING => await HandleDeleteDeviceAsync(operation),
-                    DeviceStatusCodes.UPDATE_PENDING => await HandleUpdateDeviceAsync(operation),
-                    DeviceStatusCodes.ACTIVATE_PENDING => await HandleActivateDeviceAsync(operation),
-                    DeviceStatusCodes.DEACTIVATE_PENDING => await HandleDeactivateDeviceAsync(operation),
-                    DeviceStatusCodes.TAG_UPDATE_PENDING => await HandleTagUpdateAsync(operation),
-                    _ => OperationResult.CreateFailure(
-                        DeviceStatusCodes.GetFailedCode(operation.StatusCode),
-                        $"Unsupported status code: {operation.StatusCode}")
-                };
-
-                stopwatch.Stop();
-                result.Duration = stopwatch.Elapsed;
-
-                await ProcessOperationResult(operation, result);
-            }
-            catch (Exception ex)
-            {
-                stopwatch.Stop();
-                _logger.LogError(ex, $"💥 İşlem exception: Device {operation.DeviceId}");
-
-                await UpdateDeviceStatus(operation.DeviceId, DeviceStatusCodes.GetFailedCode(operation.StatusCode));
-
-                OperationFailed?.Invoke(this, new DeviceOperationEventArgs
-                {
-                    DeviceId = operation.DeviceId,
-                    StatusCode = operation.StatusCode,
-                    Message = ex.Message,
-                    Timestamp = DateTime.Now,
-                    Success = false,
-                    Duration = stopwatch.Elapsed
-                });
-            }
-        }
-
-        private async Task<OperationResult> HandleAddDeviceAsync(DeviceOperation operation)
+    private byte GetErrorStatus(byte operationStatus)
+    {
+        return operationStatus switch
         {
-            try
-            {
-                var result = new OperationResult();
-
-                result.Steps.Add("Channel kontrolü");
-                var channelResult = await _kepApi.ChannelPostAsync(operation.ChannelJson);
-                if (channelResult != "Success" && channelResult != "Exist")
-                {
-                    return OperationResult.CreateFailure(DeviceStatusCodes.ADD_FAILED,
-                        $"Channel oluşturulamadı: {channelResult}");
-                }
-                if (channelResult == "Success") result.Steps.Add("Channel oluşturuldu");
-
-                result.Steps.Add("Device ekleme");
-                var deviceResult = await _kepApi.DevicePostAsync(operation.DeviceJson, operation.ChannelName);
-                if (deviceResult != "Success" && deviceResult != "Exist")
-                {
-                    return OperationResult.CreateFailure(DeviceStatusCodes.ADD_FAILED,
-                        $"Device oluşturulamadı: {deviceResult}");
-                }
-                result.Steps.Add("Device eklendi");
-
-                var tagInfo = await GetDeviceTagInfoAsync(operation.DeviceId, operation.DeviceTypeId);
-                if (tagInfo.TotalTagCount > 0)
-                {
-                    result.Steps.Add($"{tagInfo.TotalTagCount} tag ekleme");
-
-                    if (!string.IsNullOrEmpty(tagInfo.DeviceTypeTagsJson) && tagInfo.DeviceTypeTagsJson != "[]")
-                    {
-                        var tagResult = await _kepApi.TagPostAsync(tagInfo.DeviceTypeTagsJson,
-                            operation.ChannelName, operation.DeviceName);
-                        if (tagResult != "Success")
-                        {
-                            result.Warnings.Add($"Device type tags uyarısı: {tagResult}");
-                        }
-                    }
-
-                    if (!string.IsNullOrEmpty(tagInfo.IndividualTagsJson) && tagInfo.IndividualTagsJson != "[]")
-                    {
-                        var tagResult = await _kepApi.TagPostAsync(tagInfo.IndividualTagsJson,
-                            operation.ChannelName, operation.DeviceName);
-                        if (tagResult != "Success")
-                        {
-                            result.Warnings.Add($"Individual tags uyarısı: {tagResult}");
-                        }
-                    }
-
-                    result.Steps.Add("Tag'lar eklendi");
-                }
-
-                await AssignDeviceToClientAsync(operation.DeviceId);
-                result.Steps.Add("Client'a atandı");
-
-                return OperationResult.CreateSuccess(DeviceStatusCodes.ADD_SUCCESS,
-                    $"Device {operation.DeviceId} başarıyla eklendi", true);
-            }
-            catch (Exception ex)
-            {
-                return OperationResult.CreateFailure(DeviceStatusCodes.ADD_FAILED,
-                    $"Add operation hatası: {ex.Message}");
-            }
-        }
-
-        private async Task<OperationResult> HandleDeleteDeviceAsync(DeviceOperation operation)
-        {
-            try
-            {
-                var result = new OperationResult();
-
-                result.Steps.Add("Client subscription durduruluyor");
-                var affectedClients = await GetDeviceClientsAsync(operation.DeviceId);
-                foreach (var clientId in affectedClients)
-                {
-                    try
-                    {
-                        await _clientManager.UnsubscribeDeviceAsync(clientId, operation.DeviceId);
-                        result.Steps.Add($"Client {clientId} unsubscribed");
-                    }
-                    catch (Exception ex)
-                    {
-                        result.Warnings.Add($"Client {clientId} unsubscribe hatası: {ex.Message}");
-                    }
-                }
-
-                if (affectedClients.Any())
-                {
-                    await Task.Delay(2000);
-                    result.Steps.Add("Subscription bekleme tamamlandı");
-                }
-
-                result.Steps.Add("KEP Server'dan silme");
-                var deleteResult = await _kepApi.DeviceDeleteAsync(operation.ChannelName, operation.DeviceName);
-                if (deleteResult != "Success")
-                {
-                    return OperationResult.CreateFailure(DeviceStatusCodes.DELETE_FAILED,
-                        $"KEP Server'dan silinemedi: {deleteResult}");
-                }
-                result.Steps.Add("KEP Server'dan silindi");
-
-                return OperationResult.CreateSuccess(DeviceStatusCodes.DELETE_SUCCESS,
-                    $"Device {operation.DeviceId} başarıyla silindi", affectedClients.Any());
-            }
-            catch (Exception ex)
-            {
-                return OperationResult.CreateFailure(DeviceStatusCodes.DELETE_FAILED,
-                    $"Delete operation hatası: {ex.Message}");
-            }
-        }
-
-        private async Task<OperationResult> HandleUpdateDeviceAsync(DeviceOperation operation)
-        {
-            try
-            {
-                var result = new OperationResult();
-
-                result.Steps.Add("Channel güncelleme");
-                var channelResult = await _kepApi.ChannelPutAsync(operation.ChannelJson, operation.ChannelName);
-                if (channelResult != "Success")
-                {
-                    return OperationResult.CreateFailure(DeviceStatusCodes.UPDATE_FAILED,
-                        $"Channel güncellenemedi: {channelResult}");
-                }
-                result.Steps.Add("Channel güncellendi");
-
-                result.Steps.Add("Device güncelleme");
-                var deviceResult = await _kepApi.DevicePutAsync(operation.DeviceJson,
-                    operation.ChannelName, operation.DeviceName);
-                if (deviceResult != "Success")
-                {
-                    return OperationResult.CreateFailure(DeviceStatusCodes.UPDATE_FAILED,
-                        $"Device güncellenemedi: {deviceResult}");
-                }
-                result.Steps.Add("Device güncellendi");
-
-                var tagInfo = await GetDeviceTagInfoAsync(operation.DeviceId, operation.DeviceTypeId);
-                if (tagInfo.TotalTagCount > 0)
-                {
-                    result.Steps.Add("Tag'lar güncelleniyor");
-
-                    await _kepApi.DeviceDeleteAsync(operation.ChannelName, operation.DeviceName);
-                    await Task.Delay(1000);
-
-                    await _kepApi.DevicePostAsync(operation.DeviceJson, operation.ChannelName);
-
-                    if (!string.IsNullOrEmpty(tagInfo.DeviceTypeTagsJson) && tagInfo.DeviceTypeTagsJson != "[]")
-                    {
-                        await _kepApi.TagPostAsync(tagInfo.DeviceTypeTagsJson, operation.ChannelName, operation.DeviceName);
-                    }
-
-                    if (!string.IsNullOrEmpty(tagInfo.IndividualTagsJson) && tagInfo.IndividualTagsJson != "[]")
-                    {
-                        await _kepApi.TagPostAsync(tagInfo.IndividualTagsJson, operation.ChannelName, operation.DeviceName);
-                    }
-
-                    result.Steps.Add("Tag'lar güncellendi");
-                }
-
-                return OperationResult.CreateSuccess(DeviceStatusCodes.UPDATE_SUCCESS,
-                    $"Device {operation.DeviceId} başarıyla güncellendi", true);
-            }
-            catch (Exception ex)
-            {
-                return OperationResult.CreateFailure(DeviceStatusCodes.UPDATE_FAILED,
-                    $"Update operation hatası: {ex.Message}");
-            }
-        }
-
-        private async Task<OperationResult> HandleActivateDeviceAsync(DeviceOperation operation)
-        {
-            try
-            {
-                var result = new OperationResult();
-
-                result.Steps.Add("Data collection aktivasyonu");
-
-                using var doc = JsonDocument.Parse(operation.DeviceJson);
-                var deviceDict = new Dictionary<string, object>();
-
-                foreach (var property in doc.RootElement.EnumerateObject())
-                {
-                    deviceDict[property.Name] = property.Value.Clone();
-                }
-
-                deviceDict["servermain.DEVICE_DATA_COLLECTION"] = true;
-
-                var updatedDeviceJson = JsonSerializer.Serialize(deviceDict);
-
-                var deviceResult = await _kepApi.DevicePutAsync(updatedDeviceJson,
-                    operation.ChannelName, operation.DeviceName);
-
-                if (deviceResult != "Success")
-                {
-                    return OperationResult.CreateFailure(DeviceStatusCodes.ACTIVATE_FAILED,
-                        $"Device aktifleştirilemedi: {deviceResult}");
-                }
-
-                result.Steps.Add("Device aktifleştirildi");
-
-                return OperationResult.CreateSuccess(DeviceStatusCodes.ACTIVATE_SUCCESS,
-                    $"Device {operation.DeviceId} aktifleştirildi", true);
-            }
-            catch (Exception ex)
-            {
-                return OperationResult.CreateFailure(DeviceStatusCodes.ACTIVATE_FAILED,
-                    $"Activate operation hatası: {ex.Message}");
-            }
-        }
-
-        private async Task<OperationResult> HandleDeactivateDeviceAsync(DeviceOperation operation)
-        {
-            try
-            {
-                var result = new OperationResult();
-
-                result.Steps.Add("Data collection deaktivasyonu");
-
-                using var doc = JsonDocument.Parse(operation.DeviceJson);
-                var deviceDict = new Dictionary<string, object>();
-
-                foreach (var property in doc.RootElement.EnumerateObject())
-                {
-                    deviceDict[property.Name] = property.Value.Clone();
-                }
-
-                deviceDict["servermain.DEVICE_DATA_COLLECTION"] = false;
-
-                var updatedDeviceJson = JsonSerializer.Serialize(deviceDict);
-
-                var deviceResult = await _kepApi.DevicePutAsync(updatedDeviceJson,
-                    operation.ChannelName, operation.DeviceName);
-
-                if (deviceResult != "Success")
-                {
-                    return OperationResult.CreateFailure(DeviceStatusCodes.DEACTIVATE_FAILED,
-                        $"Device deaktifleştirilemedi: {deviceResult}");
-                }
-
-                result.Steps.Add("Device deaktifleştirildi");
-
-                return OperationResult.CreateSuccess(DeviceStatusCodes.DEACTIVATE_SUCCESS,
-                    $"Device {operation.DeviceId} deaktifleştirildi", true);
-            }
-            catch (Exception ex)
-            {
-                return OperationResult.CreateFailure(DeviceStatusCodes.DEACTIVATE_FAILED,
-                    $"Deactivate operation hatası: {ex.Message}");
-            }
-        }
-
-        private async Task<OperationResult> HandleTagUpdateAsync(DeviceOperation operation)
-        {
-            try
-            {
-                var result = new OperationResult();
-
-                result.Steps.Add("Tag update için device yeniden oluşturuluyor");
-
-                await _kepApi.DeviceDeleteAsync(operation.ChannelName, operation.DeviceName);
-                await Task.Delay(2000);
-
-                var deviceResult = await _kepApi.DevicePostAsync(operation.DeviceJson, operation.ChannelName);
-                if (deviceResult != "Success")
-                {
-                    return OperationResult.CreateFailure(DeviceStatusCodes.TAG_UPDATE_FAILED,
-                        $"Device yeniden oluşturulamadı: {deviceResult}");
-                }
-
-                var tagInfo = await GetDeviceTagInfoAsync(operation.DeviceId, operation.DeviceTypeId);
-                if (tagInfo.TotalTagCount > 0)
-                {
-                    if (!string.IsNullOrEmpty(tagInfo.DeviceTypeTagsJson) && tagInfo.DeviceTypeTagsJson != "[]")
-                    {
-                        await _kepApi.TagPostAsync(tagInfo.DeviceTypeTagsJson, operation.ChannelName, operation.DeviceName);
-                    }
-
-                    if (!string.IsNullOrEmpty(tagInfo.IndividualTagsJson) && tagInfo.IndividualTagsJson != "[]")
-                    {
-                        await _kepApi.TagPostAsync(tagInfo.IndividualTagsJson, operation.ChannelName, operation.DeviceName);
-                    }
-
-                    result.Steps.Add($"{tagInfo.TotalTagCount} tag güncellendi");
-                }
-
-                return OperationResult.CreateSuccess(DeviceStatusCodes.TAG_UPDATE_SUCCESS,
-                    $"Device {operation.DeviceId} tag'ları güncellendi", true);
-            }
-            catch (Exception ex)
-            {
-                return OperationResult.CreateFailure(DeviceStatusCodes.TAG_UPDATE_FAILED,
-                    $"Tag update hatası: {ex.Message}");
-            }
-        }
-
-        private async Task<DeviceTagInfo> GetDeviceTagInfoAsync(int deviceId, int deviceTypeId)
-        {
-            var tagInfo = new DeviceTagInfo
-            {
-                DeviceId = deviceId,
-                ChannelName = "",
-                DeviceName = deviceId.ToString()
-            };
-
-            try
-            {
-                const string deviceTypeTagsSql = "CALL sp_getDeviceTagjSons(@DeviceId)";
-                tagInfo.DeviceTypeTagsJson = await _dbManager.QueryFirstExchangerAsync<string>(
-                    deviceTypeTagsSql, new { DeviceId = deviceId }) ?? "[]";
-
-                const string individualTagsSql = "CALL sp_getDeviceIndividualTagJsons(@DeviceId)";
-                tagInfo.IndividualTagsJson = await _dbManager.QueryFirstExchangerAsync<string>(
-                    individualTagsSql, new { DeviceId = deviceId }) ?? "[]";
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, $"Tag info alınırken hata: Device {deviceId}");
-            }
-
-            return tagInfo;
-        }
-
-        private async Task<List<int>> GetDeviceClientsAsync(int deviceId)
-        {
-            try
-            {
-                const string sql = "SELECT DISTINCT clientId FROM channeldevice WHERE id = @DeviceId AND clientId IS NOT NULL";
-                var results = await _dbManager.QueryExchangerAsync<int>(sql, new { DeviceId = deviceId });
-                return results.ToList();
-            }
-            catch
-            {
-                return new List<int>();
-            }
-        }
-
-        private async Task AssignDeviceToClientAsync(int deviceId)
-        {
-            try
-            {
-                const string sql = @"
-                    SELECT clientId, COUNT(*) as DeviceCount 
-                    FROM channeldevice 
-                    WHERE clientId IS NOT NULL 
-                    GROUP BY clientId 
-                    ORDER BY COUNT(*) ASC 
-                    LIMIT 1";
-
-                var result = await _dbManager.QueryFirstExchangerAsync<dynamic>(sql);
-
-                if (result != null)
-                {
-                    int targetClientId = (int)result.clientId;
-
-                    const string updateSql = "UPDATE channeldevice SET clientId = @ClientId WHERE id = @DeviceId";
-                    await _dbManager.ExecuteExchangerAsync(updateSql,
-                        new { ClientId = targetClientId, DeviceId = deviceId });
-
-                    _logger.LogInformation($"📋 Device {deviceId} client {targetClientId}'a atandı");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, $"Device {deviceId} client assignment hatası");
-            }
-        }
-
-        private async Task ProcessOperationResult(DeviceOperation operation, OperationResult result)
-        {
-            await UpdateDeviceStatus(operation.DeviceId, result.ResultStatusCode);
-
-            var eventArgs = new DeviceOperationEventArgs
-            {
-                DeviceId = operation.DeviceId,
-                StatusCode = operation.StatusCode,
-                Message = result.Message,
-                Timestamp = DateTime.Now,
-                Success = result.Success,
-                Duration = result.Duration
-            };
-
-            if (result.Success)
-            {
-                _logger.LogInformation($"✅ İşlem başarılı ({result.Duration.TotalMilliseconds:F0}ms): {result.Message}");
-                if (result.Steps.Any())
-                {
-                    _logger.LogInformation($"📝 Adımlar: {string.Join(" → ", result.Steps)}");
-                }
-                if (result.Warnings.Any())
-                {
-                    _logger.LogWarning($"⚠️ Uyarılar: {string.Join(", ", result.Warnings)}");
-                }
-
-                if (result.RequiresClientRestart)
-                {
-                    _logger.LogInformation($"🔄 Client restart gerekiyor: Device {operation.DeviceId}");
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(3000);
-                        await _clientManager.RestartAffectedClientsAsync(operation.DeviceId);
-                    });
-                }
-
-                OperationCompleted?.Invoke(this, eventArgs);
-            }
-            else
-            {
-                _logger.LogError($"❌ İşlem başarısız ({result.Duration.TotalMilliseconds:F0}ms): {result.Message}");
-                OperationFailed?.Invoke(this, eventArgs);
-            }
-        }
-
-        private async Task UpdateDeviceStatus(int deviceId, byte statusCode)
-        {
-            try
-            {
-                const string sql = @"
-                    UPDATE channeldevice 
-                    SET statusCode = @StatusCode, updateTime = NOW() 
-                    WHERE id = @DeviceId";
-
-                await _dbManager.ExecuteExchangerAsync(sql,
-                    new { DeviceId = deviceId, StatusCode = statusCode });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Status update hatası: Device {deviceId}, Status {statusCode}");
-            }
-        }
-
-        public void Dispose()
-        {
-            _pollingTimer?.Dispose();
-            _processingLock?.Dispose();
-        }
+            11 => 13, // Ekleme hatası
+            20 => 23, // Silme hatası
+            21 => 23, // Silme hatası
+            31 => 33, // Güncelleme hatası
+            41 => 43,
+            51 => 53,
+            61 => 63,
+            _ => 13
+        };
     }
 }

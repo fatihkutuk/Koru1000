@@ -16,7 +16,7 @@ public class KepServerInitializer : IKepServerInitializer
     private readonly IKepRestApiManager _restApiManager;
     private Session? _session;
     private ApplicationConfiguration? _appConfig;
-    private DriverInfo? _driverInfo;
+    private DriverCustomSettings? _driverInfo;
 
     // Metrikler için properties
     private SyncMetrics _metrics = new SyncMetrics();
@@ -103,7 +103,7 @@ public class KepServerInitializer : IKepServerInitializer
                 return false;
             }
 
-            _driverInfo = new DriverInfo
+            _driverInfo = new DriverCustomSettings
             {
                 Id = (int)driverData.id,
                 Name = driverData.name,

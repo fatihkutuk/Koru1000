@@ -5,7 +5,7 @@ namespace Koru1000.KepServerService.Models;
 public class DriverCustomSettings
 {
     [JsonPropertyName("security")]
-    public DriverSecurity Security { get; set; } = new();
+    public SecuritySettings? Security { get; set; }
 
     [JsonPropertyName("namespace")]
     public string Namespace { get; set; } = "2";
@@ -14,7 +14,7 @@ public class DriverCustomSettings
     public string EndpointUrl { get; set; } = "opc.tcp://localhost:49320";
 
     [JsonPropertyName("credentials")]
-    public DriverCredentials Credentials { get; set; } = new();
+    public CredentialSettings? Credentials { get; set; }
 
     [JsonPropertyName("description")]
     public string Description { get; set; } = "";
@@ -25,35 +25,32 @@ public class DriverCustomSettings
     [JsonPropertyName("addressFormat")]
     public string AddressFormat { get; set; } = "ns={namespace};s={channelName}.{deviceName}.{tagName}";
 
-    [JsonPropertyName("tagsPerClient")]
-    public int TagsPerClient { get; set; } = 20000;
-
     [JsonPropertyName("connectionSettings")]
-    public DriverConnectionSettings ConnectionSettings { get; set; } = new();
+    public ConnectionSettings? ConnectionSettings { get; set; }
 }
 
-public class DriverSecurity
+public class SecuritySettings
 {
     [JsonPropertyName("mode")]
-    public string Mode { get; set; } = "SignAndEncrypt";
+    public string Mode { get; set; } = "None";
 
     [JsonPropertyName("policy")]
-    public string Policy { get; set; } = "Basic256Sha256";
+    public string Policy { get; set; } = "None";
 
     [JsonPropertyName("userTokenType")]
-    public string UserTokenType { get; set; } = "UserName";
+    public string UserTokenType { get; set; } = "Anonymous";
 }
 
-public class DriverCredentials
+public class CredentialSettings
 {
-    [JsonPropertyName("username")]
-    public string Username { get; set; } = "";
-
     [JsonPropertyName("password")]
     public string Password { get; set; } = "";
+
+    [JsonPropertyName("username")]
+    public string Username { get; set; } = "";
 }
 
-public class DriverConnectionSettings
+public class ConnectionSettings
 {
     [JsonPropertyName("updateRate")]
     public int UpdateRate { get; set; } = 1000;
@@ -73,17 +70,9 @@ public class DriverConnectionSettings
     [JsonPropertyName("clientStartDelay")]
     public int ClientStartDelay { get; set; } = 3000;
 
+    [JsonPropertyName("maxTagsPerClient")]
+    public int MaxTagsPerClient { get; set; } = 30000;
+
     [JsonPropertyName("publishingInterval")]
     public int PublishingInterval { get; set; } = 2000;
-
-    [JsonPropertyName("maxTagsPerSubscription")]
-    public int MaxTagsPerSubscription { get; set; } = 15000;
-}
-
-public class DriverInfo
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = "";
-    public string DriverTypeName { get; set; } = "";
-    public DriverCustomSettings CustomSettings { get; set; } = new();
 }

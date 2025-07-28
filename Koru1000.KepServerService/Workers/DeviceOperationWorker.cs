@@ -1,53 +1,53 @@
-﻿// Koru1000.KepServerService/Workers/DeviceOperationWorker.cs
-using Koru1000.KepServerService.Services;
+﻿using Koru1000.KepServerService.Services;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
-namespace Koru1000.KepServerService.Workers
+namespace Koru1000.KepServerService.Workers;
+
+public class DeviceOperationWorker : BackgroundService
 {
-    public class DeviceOperationWorker : BackgroundService
+    private readonly IDeviceOperationManager _operationManager;
+    private readonly ILogger<DeviceOperationWorker> _logger;
+
+    public DeviceOperationWorker(
+        IDeviceOperationManager operationManager,
+        ILogger<DeviceOperationWorker> logger)
     {
-        private readonly IDeviceOperationManager _operationManager;
-        private readonly ILogger<DeviceOperationWorker> _logger;
+        _operationManager = operationManager;
+        _logger = logger;
+    }
 
-        public DeviceOperationWorker(
-            IDeviceOperationManager operationManager,
-            ILogger<DeviceOperationWorker> logger)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        try
         {
-            _operationManager = operationManager;
-            _logger = logger;
-        }
+            _logger.LogInformation("🚀 Device Operation Worker başlatılıyor...");
 
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-        {
-            try
-            {
-                _logger.LogInformation("🚀 Device Operation Worker başlatılıyor...");
+            await _operationManager.StartAsync();
 
-                await _operationManager.StartAsync();
-
-                // Worker çalışırken bekle
-                while (!stoppingToken.IsCancellationRequested)
-                {
-                    await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
-                }
-            }
-            catch (OperationCanceledException)
+            // Worker çalışırken bekle
+            while (!stoppingToken.IsCancellationRequested)
             {
-                _logger.LogInformation("Device Operation Worker iptal edildi");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Device Operation Worker hatası");
+                await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
             }
         }
-
-        public override async Task StopAsync(CancellationToken cancellationToken)
+        catch (OperationCanceledException)
         {
-            _logger.LogInformation("🛑 Device Operation Worker durduruluyor...");
-
-            await _operationManager.StopAsync();
-            await base.StopAsync(cancellationToken);
-
-            _logger.LogInformation("✅ Device Operation Worker durduruldu");
+            _logger.LogInformation("Device Operation Worker iptal edildi");
         }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Device Operation Worker hatası");
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("🛑 Device Operation Worker durduruluyor...");
+
+        await _operationManager.StopAsync();
+        await base.StopAsync(cancellationToken);
+
+        _logger.LogInformation("✅ Device Operation Worker durduruldu");
     }
 }

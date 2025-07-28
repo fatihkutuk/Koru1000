@@ -1,260 +1,375 @@
-﻿using System.Linq;
+﻿using Microsoft.Extensions.Logging;
+using Newtonsoft.Json.Linq;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Text.Json;
-using Microsoft.Extensions.Logging;
+using Koru1000.KepServerService.Models;
 
 namespace Koru1000.KepServerService.Services;
 
 public interface IKepRestApiManager
 {
-    Task<string> ChannelPostAsync(string channelJson);
-    Task<string> ChannelPutAsync(string channelJson, string channelName);
-    Task<string> DevicePostAsync(string deviceJson, string channelName);
-    Task<string> DevicePutAsync(string deviceJson, string channelName, string deviceName);
-    Task<string> DeviceDeleteAsync(string channelName, string deviceName);
-    Task<string> TagPostAsync(string tagJson, string channelName, string deviceName);
-    Task<string> TagPutAsync(string tagJson, string channelName, string deviceName);
+    Task<bool> InitializeForDriverAsync(int driverId);
+    Task<bool> CreateOrUpdateChannelAsync(int driverId, string channelName, string channelJson);
+    Task<bool> CreateOrUpdateDeviceAsync(int driverId, string channelName, string deviceName, string deviceJson);
+    Task<bool> CreateOrUpdateTagAsync(int driverId, string channelName, string deviceName, string tagName, string tagJson);
+    Task<bool> DeleteChannelAsync(int driverId, string channelName);
+    Task<bool> DeleteDeviceAsync(int driverId, string channelName, string deviceName);
+    Task<bool> DeleteTagAsync(int driverId, string channelName, string deviceName, string tagName);
+    Task<bool> TestConnectionAsync(int driverId);
 }
 
 public class KepRestApiManager : IKepRestApiManager
 {
-    private readonly HttpClient _httpClient;
     private readonly ILogger<KepRestApiManager> _logger;
-    private readonly string _baseUrl;
-    private readonly string _credentials;
+    private readonly Koru1000.DatabaseManager.DatabaseManager _dbManager;
+    private readonly Dictionary<int, HttpClient> _httpClients = new();
+    private readonly Dictionary<int, RestApiSettings> _driverApiSettings = new();
 
-    public KepRestApiManager(ILogger<KepRestApiManager> logger)
+    public KepRestApiManager(
+        ILogger<KepRestApiManager> logger,
+        Koru1000.DatabaseManager.DatabaseManager dbManager)
     {
         _logger = logger;
-        _baseUrl = "http://127.0.0.1:57412/config/v1/project/channels";
-        _credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes("administrator:Envest789.Korusu123"));
-
-        _httpClient = new HttpClient();
-        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", _credentials);
-        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        _dbManager = dbManager;
     }
 
-    public async Task<string> ChannelPostAsync(string channelJson)
+    public async Task<bool> InitializeForDriverAsync(int driverId)
     {
         try
         {
-            // ÖNCE GET ile channel'ın var olup olmadığını kontrol et
-            var channelName = ExtractChannelNameFromJson(channelJson);
-            var checkUrl = $"{_baseUrl}/{channelName}";
+            _logger.LogInformation($"🔧 Driver {driverId} için REST API ayarları yükleniyor...");
 
-            var checkResponse = await _httpClient.GetAsync(checkUrl);
-            if (checkResponse.IsSuccessStatusCode)
+            // Driver'ın customSettings'ini al
+            var driverSettings = await GetDriverSettingsAsync(driverId);
+            if (driverSettings?.RestApiSettings == null)
             {
-                _logger.LogInformation($"✅ Channel zaten mevcut (GET ile doğrulandı): {channelName}");
-                return "Exist";
+                _logger.LogWarning($"⚠️ Driver {driverId} için REST API ayarları bulunamadı, default kullanılıyor");
+                driverSettings = new DriverCustomSettings
+                {
+                    RestApiSettings = new RestApiSettings()
+                };
             }
 
-            // Yoksa ekle
-            var content = new StringContent(channelJson, Encoding.UTF8, "application/json");
-            var url = $"{_baseUrl}";
-            var response = await _httpClient.PostAsync(url, content);
+            var apiSettings = driverSettings.RestApiSettings;
+            _driverApiSettings[driverId] = apiSettings;
 
-            var responseContent = await response.Content.ReadAsStringAsync();
+            // Bu driver için HttpClient oluştur
+            var httpClient = new HttpClient();
+            httpClient.Timeout = TimeSpan.FromSeconds(apiSettings.TimeoutSeconds);
+            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            if (response.IsSuccessStatusCode)
+            // Authentication ayarla
+            if (apiSettings.Authentication?.Enabled == true)
             {
-                _logger.LogInformation($"✅ Channel POST success: {channelName}");
-                return "Success";
+                var auth = apiSettings.Authentication;
+
+                switch (auth.Type?.ToLower())
+                {
+                    case "basic":
+                        var basicAuth = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{auth.Username}:{auth.Password}"));
+                        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", basicAuth);
+                        _logger.LogDebug($"✅ Driver {driverId} Basic Auth ayarlandı: {auth.Username}");
+                        break;
+
+                    case "bearer":
+                        if (!string.IsNullOrEmpty(auth.Token))
+                        {
+                            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", auth.Token);
+                            _logger.LogDebug($"✅ Driver {driverId} Bearer Token ayarlandı");
+                        }
+                        break;
+
+                    case "apikey":
+                        if (!string.IsNullOrEmpty(auth.ApiKey))
+                        {
+                            httpClient.DefaultRequestHeaders.Add("X-API-Key", auth.ApiKey);
+                            _logger.LogDebug($"✅ Driver {driverId} API Key ayarlandı");
+                        }
+                        break;
+
+                    default:
+                        _logger.LogWarning($"⚠️ Driver {driverId} bilinmeyen auth type: {auth.Type}");
+                        break;
+                }
             }
-            else if (responseContent.Contains("already used") ||
-                     responseContent.Contains("already exists"))
+
+            _httpClients[driverId] = httpClient;
+
+            _logger.LogInformation($"✅ Driver {driverId} REST API ayarları başarıyla yüklendi");
+            _logger.LogInformation($"   • Base URL: {apiSettings.BaseUrl}");
+            _logger.LogInformation($"   • Timeout: {apiSettings.TimeoutSeconds}s");
+            _logger.LogInformation($"   • Auth: {(apiSettings.Authentication?.Enabled == true ? apiSettings.Authentication.Type : "None")}");
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Driver {driverId} REST API ayarları yüklenemedi");
+            return false;
+        }
+    }
+
+    public async Task<bool> TestConnectionAsync(int driverId)
+    {
+        try
+        {
+            if (!_httpClients.TryGetValue(driverId, out var httpClient) ||
+                !_driverApiSettings.TryGetValue(driverId, out var settings))
             {
-                _logger.LogInformation($"ℹ️ Channel zaten var (API response): {channelName}");
-                return "Exist";
+                await InitializeForDriverAsync(driverId);
+                if (!_httpClients.TryGetValue(driverId, out httpClient) ||
+                    !_driverApiSettings.TryGetValue(driverId, out settings))
+                {
+                    return false;
+                }
+            }
+
+            var response = await httpClient.GetAsync($"{settings.BaseUrl.TrimEnd('/')}/channels");
+            var success = response.IsSuccessStatusCode;
+
+            if (success)
+            {
+                _logger.LogInformation($"✅ Driver {driverId} KEP Server Config API bağlantısı başarılı");
             }
             else
             {
-                _logger.LogError($"❌ Channel POST failed: {response.StatusCode} - {responseContent}");
-                return $"FAILED: {response.StatusCode}";
+                _logger.LogWarning($"⚠️ Driver {driverId} KEP Server Config API bağlantı hatası: {response.StatusCode}");
             }
+
+            return success;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "💥 Channel POST exception");
-            return "FAILED";
+            _logger.LogError(ex, $"Driver {driverId} KEP Server Config API bağlantı testi başarısız");
+            return false;
         }
     }
 
-    // Yardımcı metod
-    private string ExtractChannelNameFromJson(string channelJson)
+    public async Task<bool> CreateOrUpdateChannelAsync(int driverId, string channelName, string channelJson)
     {
-        try
+        return await ExecuteWithRetryAsync(driverId, async (httpClient, settings) =>
         {
-            var jsonDoc = JsonSerializer.Deserialize<JsonDocument>(channelJson);
-            var nameProperty = jsonDoc.RootElement.GetProperty("common.ALLTYPES_NAME");
-            return nameProperty.GetString() ?? "";
-        }
-        catch
-        {
-            return "";
-        }
-    }
+            var url = $"{settings.BaseUrl.TrimEnd('/')}/channels/{channelName}";
 
-    public async Task<string> ChannelPutAsync(string channelJson, string channelName)
-    {
-        try
-        {
-            var channelObj = JsonSerializer.Deserialize<JsonDocument>(channelJson);
-            var root = channelObj.RootElement.Clone();
+            // JSON'ı parse et ve FORCE_UPDATE ekle
+            var channelObj = JObject.Parse(channelJson);
+            channelObj["FORCE_UPDATE"] = true;
 
-            // FORCE_UPDATE ekle - Düzeltilmiş versiyonu
-            var originalDict = root.EnumerateObject().ToDictionary(p => p.Name, p => (object)p.Value);
-            originalDict["FORCE_UPDATE"] = true;
-
-            var modifiedJson = JsonSerializer.Serialize(originalDict);
-
-            var content = new StringContent(modifiedJson, Encoding.UTF8, "application/json");
-            var url = $"{_baseUrl}/{channelName}";
-            var response = await _httpClient.PutAsync(url, content);
-
-            await Task.Delay(50);
-
-            return response.IsSuccessStatusCode ? "Success" : response.ReasonPhrase ?? "Failed";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Channel PUT hatası: {ChannelName}", channelName);
-            return "FAILED";
-        }
-    }
-
-    public async Task<string> DevicePostAsync(string deviceJson, string channelName)
-    {
-        try
-        {
-            var content = new StringContent(deviceJson, Encoding.UTF8, "application/json");
-            var url = $"{_baseUrl}/{channelName}/devices";
-            var response = await _httpClient.PostAsync(url, content);
-
-            await Task.Delay(25);
+            var content = new StringContent(channelObj.ToString(), Encoding.UTF8, "application/json");
+            var response = await httpClient.PutAsync(url, content);
 
             if (response.IsSuccessStatusCode)
             {
-                return "Success";
+                _logger.LogDebug($"✅ Channel oluşturuldu/güncellendi: {channelName} (Driver: {driverId})");
+                return true;
             }
             else
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                if (errorContent.Contains("Validation failed on property common.ALLTYPES_NAME"))
-                {
-                    return "Exist";
-                }
-                return response.ReasonPhrase ?? "Failed";
+                _logger.LogWarning($"⚠️ Channel işlemi başarısız: {channelName} - {response.StatusCode}: {errorContent}");
+                return false;
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Device POST hatası: {ChannelName}", channelName);
-            return "FAILED";
-        }
+        });
     }
 
-    public async Task<string> DevicePutAsync(string deviceJson, string channelName, string deviceName)
+    public async Task<bool> CreateOrUpdateDeviceAsync(int driverId, string channelName, string deviceName, string deviceJson)
     {
-        try
+        return await ExecuteWithRetryAsync(driverId, async (httpClient, settings) =>
         {
-            var deviceObj = JsonSerializer.Deserialize<JsonDocument>(deviceJson);
-            var root = deviceObj.RootElement.Clone();
+            var url = $"{settings.BaseUrl.TrimEnd('/')}/channels/{channelName}/devices/{deviceName}";
 
-            // FORCE_UPDATE ekle - Düzeltilmiş versiyonu
-            var originalDict = root.EnumerateObject().ToDictionary(p => p.Name, p => (object)p.Value);
-            originalDict["FORCE_UPDATE"] = true;
+            // JSON'ı parse et ve FORCE_UPDATE ekle
+            var deviceObj = JObject.Parse(deviceJson);
+            deviceObj["FORCE_UPDATE"] = true;
 
-            var modifiedJson = JsonSerializer.Serialize(originalDict);
+            var content = new StringContent(deviceObj.ToString(), Encoding.UTF8, "application/json");
+            var response = await httpClient.PutAsync(url, content);
 
-            var content = new StringContent(modifiedJson, Encoding.UTF8, "application/json");
-            var url = $"{_baseUrl}/{channelName}/devices/{deviceName}";
-            var response = await _httpClient.PutAsync(url, content);
-
-            await Task.Delay(50);
-
-            return response.IsSuccessStatusCode ? "Success" : response.ReasonPhrase ?? "Failed";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Device PUT hatası: {ChannelName}/{DeviceName}", channelName, deviceName);
-            return "FAILED";
-        }
-    }
-
-    public async Task<string> DeviceDeleteAsync(string channelName, string deviceName)
-    {
-        try
-        {
-            await Task.Delay(15000);
-
-            var url = $"{_baseUrl}/{channelName}/devices/{deviceName}";
-            var response = await _httpClient.DeleteAsync(url);
-
-            await Task.Delay(300);
-
-            return response.IsSuccessStatusCode ? "Success" : response.ReasonPhrase ?? "Failed";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Device DELETE hatası: {ChannelName}/{DeviceName}", channelName, deviceName);
-            return "FAILED";
-        }
-    }
-
-    public async Task<string> TagPostAsync(string tagJson, string channelName, string deviceName)
-    {
-        try
-        {
-            var content = new StringContent(tagJson, Encoding.UTF8, "application/json");
-            var url = $"{_baseUrl}/{channelName}/devices/{deviceName}/tags";
-            var response = await _httpClient.PostAsync(url, content);
-
-            await Task.Delay(50);
-
-            if (response.IsSuccessStatusCode || response.StatusCode != System.Net.HttpStatusCode.NotFound)
+            if (response.IsSuccessStatusCode)
             {
-                return "Success";
+                _logger.LogDebug($"✅ Device oluşturuldu/güncellendi: {channelName}.{deviceName} (Driver: {driverId})");
+                return true;
             }
             else
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                if (errorContent.Contains("is already used"))
-                {
-                    return response.ReasonPhrase ?? "Success";
-                }
-                return "Failed";
+                _logger.LogWarning($"⚠️ Device işlemi başarısız: {channelName}.{deviceName} - {response.StatusCode}: {errorContent}");
+                return false;
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Tag POST hatası: {ChannelName}/{DeviceName}", channelName, deviceName);
-            return "FAILED";
-        }
+        });
     }
 
-    public async Task<string> TagPutAsync(string tagJson, string channelName, string deviceName)
+    public async Task<bool> CreateOrUpdateTagAsync(int driverId, string channelName, string deviceName, string tagName, string tagJson)
+    {
+        return await ExecuteWithRetryAsync(driverId, async (httpClient, settings) =>
+        {
+            var url = $"{settings.BaseUrl.TrimEnd('/')}/channels/{channelName}/devices/{deviceName}/tags/{tagName}";
+
+            // JSON'ı parse et ve FORCE_UPDATE ekle
+            var tagObj = JObject.Parse(tagJson);
+            tagObj["FORCE_UPDATE"] = true;
+
+            var content = new StringContent(tagObj.ToString(), Encoding.UTF8, "application/json");
+            var response = await httpClient.PutAsync(url, content);
+
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogDebug($"✅ Tag oluşturuldu/güncellendi: {channelName}.{deviceName}.{tagName} (Driver: {driverId})");
+                return true;
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogWarning($"⚠️ Tag işlemi başarısız: {channelName}.{deviceName}.{tagName} - {response.StatusCode}: {errorContent}");
+                return false;
+            }
+        });
+    }
+
+    public async Task<bool> DeleteChannelAsync(int driverId, string channelName)
+    {
+        return await ExecuteWithRetryAsync(driverId, async (httpClient, settings) =>
+        {
+            var url = $"{settings.BaseUrl.TrimEnd('/')}/channels/{channelName}";
+            var response = await httpClient.DeleteAsync(url);
+
+            if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                _logger.LogDebug($"✅ Channel silindi: {channelName} (Driver: {driverId})");
+                return true;
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogWarning($"⚠️ Channel silme başarısız: {channelName} - {response.StatusCode}: {errorContent}");
+                return false;
+            }
+        });
+    }
+
+    public async Task<bool> DeleteDeviceAsync(int driverId, string channelName, string deviceName)
+    {
+        return await ExecuteWithRetryAsync(driverId, async (httpClient, settings) =>
+        {
+            var url = $"{settings.BaseUrl.TrimEnd('/')}/channels/{channelName}/devices/{deviceName}";
+            var response = await httpClient.DeleteAsync(url);
+
+            if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                _logger.LogDebug($"✅ Device silindi: {channelName}.{deviceName} (Driver: {driverId})");
+                return true;
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogWarning($"⚠️ Device silme başarısız: {channelName}.{deviceName} - {response.StatusCode}: {errorContent}");
+                return false;
+            }
+        });
+    }
+
+    public async Task<bool> DeleteTagAsync(int driverId, string channelName, string deviceName, string tagName)
+    {
+        return await ExecuteWithRetryAsync(driverId, async (httpClient, settings) =>
+        {
+            var url = $"{settings.BaseUrl.TrimEnd('/')}/channels/{channelName}/devices/{deviceName}/tags/{tagName}";
+            var response = await httpClient.DeleteAsync(url);
+
+            if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                _logger.LogDebug($"✅ Tag silindi: {channelName}.{deviceName}.{tagName} (Driver: {driverId})");
+                return true;
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogWarning($"⚠️ Tag silme başarısız: {channelName}.{deviceName}.{tagName} - {response.StatusCode}: {errorContent}");
+                return false;
+            }
+        });
+    }
+
+    // Helper metodlar
+    private async Task<DriverCustomSettings?> GetDriverSettingsAsync(int driverId)
     {
         try
         {
-            var deleteResult = await DeviceDeleteAsync(channelName, deviceName);
-            if (deleteResult != "Success")
+            const string sql = @"
+                SELECT d.customSettings
+                FROM driver d
+                INNER JOIN drivertype dt ON d.driverTypeId = dt.id
+                WHERE d.id = @DriverId AND dt.name = 'KEPSERVEREX'";
+
+            var result = await _dbManager.QueryExchangerAsync<dynamic>(sql, new { DriverId = driverId });
+            var driverData = result.FirstOrDefault();
+
+            if (driverData?.customSettings != null)
             {
-                return "FAILED";
+                return System.Text.Json.JsonSerializer.Deserialize<DriverCustomSettings>(
+                    driverData.customSettings.ToString(),
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             }
 
-            return "Success";
+            return null;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Tag PUT hatası: {ChannelName}/{DeviceName}", channelName, deviceName);
-            return "FAILED";
+            _logger.LogError(ex, $"Driver {driverId} ayarları alınamadı");
+            return null;
         }
+    }
+
+    private async Task<bool> ExecuteWithRetryAsync(int driverId, Func<HttpClient, RestApiSettings, Task<bool>> operation)
+    {
+        if (!_httpClients.TryGetValue(driverId, out var httpClient) ||
+            !_driverApiSettings.TryGetValue(driverId, out var settings))
+        {
+            await InitializeForDriverAsync(driverId);
+            if (!_httpClients.TryGetValue(driverId, out httpClient) ||
+                !_driverApiSettings.TryGetValue(driverId, out settings))
+            {
+                return false;
+            }
+        }
+
+        var retryCount = settings.RetryCount;
+        var retryDelay = settings.RetryDelayMs;
+
+        for (int attempt = 1; attempt <= retryCount; attempt++)
+        {
+            try
+            {
+                var result = await operation(httpClient, settings);
+                if (result || attempt == retryCount)
+                {
+                    return result;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, $"Driver {driverId} REST API işlemi başarısız (Deneme {attempt}/{retryCount})");
+
+                if (attempt == retryCount)
+                {
+                    return false;
+                }
+            }
+
+            if (attempt < retryCount)
+            {
+                await Task.Delay(retryDelay);
+            }
+        }
+
+        return false;
     }
 
     public void Dispose()
     {
-        _httpClient?.Dispose();
+        foreach (var client in _httpClients.Values)
+        {
+            client?.Dispose();
+        }
+        _httpClients.Clear();
     }
 }

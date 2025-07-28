@@ -11,7 +11,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Koru1000.Shared", "Koru1000
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ManagerUI", "ManagerUI\ManagerUI.csproj", "{F505592F-6EFC-4A54-A882-1BFBA47E00D8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Koru1000.KepServerService", "Koru1000.KepServerService\Koru1000.KepServerService.csproj", "{231E70FD-1333-40FA-AA45-AC708BF741C9}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Koru1000.KepServerService", "Koru1000.KepServerService\Koru1000.KepServerService.csproj", "{DF57B169-81A9-4932-AF53-C230CC0B559C}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -35,10 +35,10 @@ Global
 		{F505592F-6EFC-4A54-A882-1BFBA47E00D8}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{F505592F-6EFC-4A54-A882-1BFBA47E00D8}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{F505592F-6EFC-4A54-A882-1BFBA47E00D8}.Release|Any CPU.Build.0 = Release|Any CPU
-		{231E70FD-1333-40FA-AA45-AC708BF741C9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{231E70FD-1333-40FA-AA45-AC708BF741C9}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{231E70FD-1333-40FA-AA45-AC708BF741C9}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{231E70FD-1333-40FA-AA45-AC708BF741C9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DF57B169-81A9-4932-AF53-C230CC0B559C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DF57B169-81A9-4932-AF53-C230CC0B559C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DF57B169-81A9-4932-AF53-C230CC0B559C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DF57B169-81A9-4932-AF53-C230CC0B559C}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

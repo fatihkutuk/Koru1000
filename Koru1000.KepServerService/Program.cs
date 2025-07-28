@@ -1,11 +1,11 @@
-using Koru1000.KepServerService.Services;
+﻿using Koru1000.KepServerService.Services;
+using Koru1000.KepServerService.Workers;
 using Koru1000.KepServerService.Models;
+using Koru1000.Core.Models;
 using Koru1000.Shared;
 using Serilog;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Koru1000.KepServerService.Workers;
+using Microsoft.Extensions.Hosting;
 
 namespace Koru1000.KepServerService;
 
@@ -13,117 +13,113 @@ public class Program
 {
     public static async Task Main(string[] args)
     {
-        // Serilog yap�land�rmas�
+        // Serilog yapılandırması
         Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Information()
             .WriteTo.Console()
-            .WriteTo.File("logs/kepserver-service-.txt",
-                rollingInterval: RollingInterval.Day,
-                retainedFileCountLimit: 30)
+            .WriteTo.File("logs/kepserver-.txt", rollingInterval: RollingInterval.Day)
             .CreateLogger();
 
         try
         {
-            Log.Information("Koru1000 KEP Server Service ba�lat�l�yor...");
+            Log.Information("🚀 Koru1000 KEP Server Service başlatılıyor...");
+
+            // UI'dan ayarları yükle
+            var settings = LoadSettingsFromUI();
+            if (settings?.Database == null)
+            {
+                Log.Error("❌ Veritabanı ayarları bulunamadı. Lütfen UI'dan ayarları yapılandırın.");
+                return;
+            }
 
             var builder = Host.CreateApplicationBuilder(args);
 
-            // Windows Service deste�i
-            builder.Services.AddWindowsService(options =>
-            {
-                options.ServiceName = "Koru1000 KEP Server Service";
-            });
-
-            // Serilog
+            // Serilog ekle
             builder.Services.AddSerilog();
 
-            // Yap�land�rma
-            var serviceConfig = LoadServiceConfiguration();
-            builder.Services.AddSingleton(serviceConfig);
+            // Ana konfigürasyon
+            var config = new KepServiceConfig();
+            builder.Services.AddSingleton(config);
 
-            // Database Manager
-            var settings = SettingsManager.LoadSettings();
-            var dbManager = Koru1000.DatabaseManager.DatabaseManager.Instance(
-                settings.Database.GetExchangerConnectionString(),
-                settings.Database.GetKbinConnectionString());
-            builder.Services.AddSingleton(dbManager);
+            // Database Manager - UI'DAN ALINAN AYARLARLA
+            builder.Services.AddSingleton<Koru1000.DatabaseManager.DatabaseManager>(provider =>
+            {
+                var exchangerConn = settings.Database.GetExchangerConnectionString();
+                var kbinConn = settings.Database.GetKbinConnectionString();
 
-            // Ana servisleri kaydet
-            builder.Services.AddSingleton<IKepClientManager, KepClientManager>();
-            builder.Services.AddSingleton<IKepDataProcessor, KepDataProcessor>();
-            builder.Services.AddSingleton<IKepServerInitializer, KepServerInitializer>();
+                Log.Information($"📊 Database bağlantıları:");
+                Log.Information($"   • Exchanger: {settings.Database.ExchangerServer}:{settings.Database.ExchangerPort}/{settings.Database.ExchangerDatabase}");
+                Log.Information($"   • Kbin: {settings.Database.KbinServer}:{settings.Database.KbinPort}/{settings.Database.KbinDatabase}");
+
+                return Koru1000.DatabaseManager.DatabaseManager.Instance(exchangerConn, kbinConn);
+            });
+
+            // Tüm driver'lar için manager'ları ekle
+            builder.Services.AddSingleton<IMultiDriverManager, MultiDriverManager>();
+
+            // KEP REST API Manager
             builder.Services.AddSingleton<IKepRestApiManager, KepRestApiManager>();
+
+            // Device Operation Manager
             builder.Services.AddSingleton<IDeviceOperationManager, DeviceOperationManager>();
 
-            builder.Services.AddHostedService<KepServerWorker>();
-
+            // Ana worker servisleri - her driver için ayrı
+            builder.Services.AddHostedService<MultiDriverWorker>();
             builder.Services.AddHostedService<DeviceOperationWorker>();
 
+            var app = builder.Build();
 
-            var host = builder.Build();
+            Log.Information("✅ Servis yapılandırması tamamlandı");
 
-            Log.Information("Host olu�turuldu, servis ba�lat�l�yor...");
-            await host.RunAsync();
+            await app.RunAsync();
         }
         catch (Exception ex)
         {
-            Log.Fatal(ex, "Uygulama ba�lat�lamad�");
-            throw;
+            Log.Fatal(ex, "💥 Servis başlatılamadı");
         }
         finally
         {
-            await Log.CloseAndFlushAsync();
+            Log.CloseAndFlush();
         }
     }
 
-    private static KepServiceConfig LoadServiceConfiguration()
+    private static AppSettings? LoadSettingsFromUI()
     {
-        return new KepServiceConfig
+        try
         {
-            ServiceName = "Koru1000 KEP Server Service",
-            ServiceDescription = "KEP Server OPC UA Client Service for Industrial Data Collection",
-            MaxConcurrentClients = 5,
-            DevicesPerClient = 1000, // Bu da veritaban�ndan override edilecek
-            StatusCheckIntervalSeconds = 30,
-            RestartServiceOnError = true,
-            KepServerServiceName = "KEPServerEXV6",
-            AutoRestartKepServer = true,
-            KepServerRestartDelay = 15000,
-            // Bu ayarlar veritaban�ndan gelecek, default de�erler
-            Limits = new KepClientLimits
+            // UI'dan kaydedilmiş ayarları yükle
+            var settings = SettingsManager.LoadSettings();
+
+            if (settings?.Database == null)
             {
-                MaxTagsPerClient = 20000,
-                MaxDevicesPerClient = 1000,
-                PublishingIntervalMs = 2000,
-                MaxNotificationsPerPublish = 10000,
-                SessionTimeoutMs = 360000,
-                ReconnectDelayMs = 5000,
-                MaxReconnectAttempts = 5
-            },
-            Security = new KepSecuritySettings
-            {
-                UseSecureConnection = true,
-                AutoAcceptUntrustedCertificates = true,
-                SecurityMode = "SignAndEncrypt",
-                SecurityPolicy = "Basic256Sha256",
-                UserTokenType = "UserName",
-                Username = "",
-                Password = ""
-            },
-            Connection = new KepConnectionSettings
-            {
-                EndpointUrl = "opc.tcp://localhost:49320",
-                ConnectTimeoutMs = 15000,
-                KeepAliveInterval = 10000,
-                ReconnectPeriod = 5000
-            },
-            Logging = new KepLoggingSettings
-            {
-                EnableOpcTracing = true,
-                LogLevel = "Information",
-                LogDataChanges = false,
-                LogConnectionStatus = true,
-                LogPerformanceMetrics = true
+                Log.Warning("⚠️ UI'dan ayar bulunamadı, default ayarlar kullanılıyor");
+
+                // Default ayarlar
+                settings = new AppSettings
+                {
+                    Database = new DatabaseSettings
+                    {
+                        ExchangerServer = "localhost",
+                        ExchangerPort = 3306,
+                        ExchangerDatabase = "dbdataexchanger",
+                        ExchangerUsername = "root",
+                        ExchangerPassword = "",
+
+                        KbinServer = "localhost",
+                        KbinPort = 3306,
+                        KbinDatabase = "kbindb",
+                        KbinUsername = "root",
+                        KbinPassword = ""
+                    }
+                };
             }
-        };
+
+            return settings;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "UI ayarları yüklenirken hata");
+            return null;
+        }
     }
 }
