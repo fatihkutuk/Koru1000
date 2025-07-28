@@ -82,6 +82,6 @@
         public string DeviceName { get; set; }
         public string TagName { get; set; }
         public string Address { get; set; } // Modbus için
-        public string NodeId => $"ns=2;s={ChannelName}.{DeviceName}.{TagName}";
+        public string NodeId => $"ns=2;{ChannelName}.{DeviceName}.{TagName}";
     }
 }

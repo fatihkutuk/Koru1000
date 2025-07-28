@@ -39,29 +39,60 @@ public class KepRestApiManager : IKepRestApiManager
     {
         try
         {
-            var content = new StringContent(channelJson, Encoding.UTF8, "application/json");
-            var response = await _httpClient.PostAsync(_baseUrl, content);
+            // ÖNCE GET ile channel'ın var olup olmadığını kontrol et
+            var channelName = ExtractChannelNameFromJson(channelJson);
+            var checkUrl = $"{_baseUrl}/{channelName}";
 
-            await Task.Delay(25);
+            var checkResponse = await _httpClient.GetAsync(checkUrl);
+            if (checkResponse.IsSuccessStatusCode)
+            {
+                _logger.LogInformation($"✅ Channel zaten mevcut (GET ile doğrulandı): {channelName}");
+                return "Exist";
+            }
+
+            // Yoksa ekle
+            var content = new StringContent(channelJson, Encoding.UTF8, "application/json");
+            var url = $"{_baseUrl}";
+            var response = await _httpClient.PostAsync(url, content);
+
+            var responseContent = await response.Content.ReadAsStringAsync();
 
             if (response.IsSuccessStatusCode)
             {
+                _logger.LogInformation($"✅ Channel POST success: {channelName}");
                 return "Success";
+            }
+            else if (responseContent.Contains("already used") ||
+                     responseContent.Contains("already exists"))
+            {
+                _logger.LogInformation($"ℹ️ Channel zaten var (API response): {channelName}");
+                return "Exist";
             }
             else
             {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                if (errorContent.Contains("Validation failed on property common.ALLTYPES_NAME"))
-                {
-                    return "Exist";
-                }
-                return response.ReasonPhrase ?? "Failed";
+                _logger.LogError($"❌ Channel POST failed: {response.StatusCode} - {responseContent}");
+                return $"FAILED: {response.StatusCode}";
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Channel POST hatası");
+            _logger.LogError(ex, "💥 Channel POST exception");
             return "FAILED";
+        }
+    }
+
+    // Yardımcı metod
+    private string ExtractChannelNameFromJson(string channelJson)
+    {
+        try
+        {
+            var jsonDoc = JsonSerializer.Deserialize<JsonDocument>(channelJson);
+            var nameProperty = jsonDoc.RootElement.GetProperty("common.ALLTYPES_NAME");
+            return nameProperty.GetString() ?? "";
+        }
+        catch
+        {
+            return "";
         }
     }
 

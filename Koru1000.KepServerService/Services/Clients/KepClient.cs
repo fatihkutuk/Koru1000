@@ -332,7 +332,7 @@ public class KepClient : IDisposable
             {
                 try
                 {
-                    var nodeId = $"ns=2;s={tag.ChannelName}.{tag.DeviceName}.{tag.TagName}";
+                    var nodeId = $"ns=2;{tag.ChannelName}.{tag.DeviceName}.{tag.TagName}";
 
                     var monitoredItem = new MonitoredItem(_subscription!.DefaultItem)
                     {

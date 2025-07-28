@@ -18,7 +18,7 @@ public class KepWriteTag
     public string DeviceName { get; set; } = "";
     public string TagName { get; set; } = "";
     public object Value { get; set; } = 0;
-    public string NodeId => $"ns=2;s={ChannelName}.{DeviceName}.{TagName}";
+    public string NodeId => $"ns=2;{ChannelName}.{DeviceName}.{TagName}";
 }
 
 public class KepDeviceInfo

@@ -653,128 +653,71 @@ public class KepServerInitializer : IKepServerInitializer
 
         try
         {
-            _logger.LogInformation("🔍 KEP Server browse başlatılıyor (SADECE Channel.Device formatı)...");
+            _logger.LogInformation("🔍 KEP Server browse başlatılıyor...");
             var startTime = DateTime.Now;
 
-            // Sadece root level'da browse et
+            // KEP Server restart'tan sonra biraz bekle
+            await Task.Delay(5000);
+
+            // Root level browse
             _session.Browse(
                 null, null, ObjectIds.ObjectsFolder, 0u,
-                BrowseDirection.Forward, ReferenceTypeIds.HierarchicalReferences,
-                true, (uint)NodeClass.Object, // SADECE Object tipindeki node'lar
+                BrowseDirection.Forward, ReferenceTypes.HierarchicalReferences,
+                true, (uint)NodeClass.Object,
                 out var continuationPoint, out var references);
 
             foreach (var channelRef in references)
             {
                 var channelName = channelRef.DisplayName.Text;
 
-                if (channelName.StartsWith("_") || channelName == "Server")
+                // System channel'larını atla
+                if (channelName.StartsWith("_") || channelName == "Server" ||
+                    channelName == "Statistics" || channelName == "System")
                     continue;
 
-                // Bu bir channel - ekle
+                // Bu bir channel
                 validPaths.Add(channelName);
-                _logger.LogDebug($"📁 Channel bulundu: {channelName}");
 
-                // Channel'ın altındaki device'ları browse et
                 try
                 {
-                    // ExpandedNodeId'yi NodeId'ye çevir
+                    // Channel'ı da browse et
                     var channelNodeId = ExpandedNodeId.ToNodeId(channelRef.NodeId, _session.NamespaceUris);
 
                     _session.Browse(
-                        null, null, channelNodeId, 0u, // Düzeltildi
-                        BrowseDirection.Forward, ReferenceTypeIds.HierarchicalReferences,
-                        true, (uint)NodeClass.Object, // SADECE Object tipindeki node'lar
+                        null, null, channelNodeId, 0u,
+                        BrowseDirection.Forward, ReferenceTypes.HierarchicalReferences,
+                        true, (uint)NodeClass.Object,
                         out var deviceContinuation, out var deviceReferences);
 
-                    var deviceCount = 0;
                     foreach (var deviceRef in deviceReferences)
                     {
                         var deviceName = deviceRef.DisplayName.Text;
 
-                        // Device name'in numeric olup olmadığını kontrol et
+                        // Numeric device check
                         if (int.TryParse(deviceName, out _))
                         {
                             var devicePath = $"{channelName}.{deviceName}";
                             validPaths.Add(devicePath);
-                            deviceCount++;
-                            _logger.LogDebug($"🔧 Device bulundu: {devicePath}");
                         }
-                        else
-                        {
-                            _logger.LogDebug($"🏷️ Non-numeric node atlandı: {channelName}.{deviceName}");
-                        }
-                    }
-
-                    if (deviceCount > 0)
-                    {
-                        _logger.LogDebug($"📊 Channel {channelName}: {deviceCount} device bulundu");
-                    }
-                    else
-                    {
-                        _logger.LogWarning($"⚠️ Channel {channelName}: Hiç device bulunamadı!");
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, $"⚠️ Channel {channelName} browse edilemedi");
+                    _logger.LogWarning(ex, $"⚠️ Channel browse hatası: {channelName}");
                 }
             }
 
             var browseTime = DateTime.Now - startTime;
             _logger.LogInformation($"✅ KEP Server browse tamamlandı: {validPaths.Count} path, {browseTime.TotalMilliseconds:F0}ms");
 
-            // Detaylı analiz
-            var channels = validPaths.Where(p => !p.Contains('.')).ToList();
-            var devices = validPaths.Where(p => p.Contains('.')).ToList();
-
-            _logger.LogInformation($"📊 Browse Detayları:");
-            _logger.LogInformation($"   • Channel'lar: {channels.Count}");
-            _logger.LogInformation($"   • Device'lar: {devices.Count}");
-            _logger.LogInformation($"   • Toplam path: {validPaths.Count}");
-
-            if (channels.Any())
-            {
-                _logger.LogInformation($"   • Örnek channel'lar: {string.Join(", ", channels.Take(5))}");
-            }
-
-            if (devices.Any())
-            {
-                _logger.LogInformation($"   • Örnek device'lar: {string.Join(", ", devices.Take(5))}");
-            }
-
-            // Channel başına device dağılımını göster
-            var channelDeviceCounts = new Dictionary<string, int>();
-            foreach (var device in devices)
-            {
-                var channelName = device.Split('.')[0];
-                channelDeviceCounts[channelName] = channelDeviceCounts.GetValueOrDefault(channelName, 0) + 1;
-            }
-
-            _logger.LogInformation($"📈 Channel başına device sayıları (ilk 10):");
-            foreach (var kvp in channelDeviceCounts.OrderByDescending(x => x.Value).Take(10))
-            {
-                _logger.LogInformation($"   • {kvp.Key}: {kvp.Value} device");
-            }
-
-            // Potansiyel sorunları tespit et
-            if (validPaths.Count > 10000)
-            {
-                _logger.LogWarning($"⚠️ Çok fazla path bulundu ({validPaths.Count}) - browse algoritması hala tag'leri dahil ediyor olabilir");
-            }
-
-            if (devices.Count < 500)
-            {
-                _logger.LogWarning($"⚠️ Çok az device bulundu ({devices.Count}) - bazı device'lar eksik olabilir");
-            }
+            return validPaths;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "❌ KEP Server browse hatası");
+            return validPaths;
         }
-
-        return validPaths;
     }
-
     private async Task PerformDetailedSyncAsync()
     {
         try
@@ -856,18 +799,18 @@ public class KepServerInitializer : IKepServerInitializer
         {
             var addStartTime = DateTime.Now;
 
-            // Eksik channel'ları ekle
+            // Eksik channel'ları ekle - BATCH VERSION KULLAN
             if (_metrics.Sync.MissingChannels.Any())
             {
-                _logger.LogInformation($"🔨 {_metrics.Sync.MissingChannels.Count} eksik channel ekleniyor...");
-                await AddMissingChannelsAsync();
+                _logger.LogInformation($"🔨 {_metrics.Sync.MissingChannels.Count} eksik channel ekleniyor (BATCH mode)...");
+                await AddMissingChannelsBatch(); // 👈 ESKİ: AddMissingChannelsAsync() YENİ: AddMissingChannelsBatch()
             }
 
             // Eksik device'ları ekle
             if (_metrics.Sync.MissingDevices.Any())
             {
                 _logger.LogInformation($"🔨 {_metrics.Sync.MissingDevices.Count} eksik device ekleniyor...");
-                await AddMissingDevicesAsync();
+                await AddMissingDevicesBatch();
             }
 
             _metrics.Sync.AddDuration = DateTime.Now - addStartTime;
@@ -880,7 +823,141 @@ public class KepServerInitializer : IKepServerInitializer
             _logger.LogError(ex, "💥 Eksik item ekleme hatası");
         }
     }
+    private async Task AddMissingChannelsBatch()
+    {
+        try
+        {
+            _logger.LogInformation($"📦 Batch mode ile {_metrics.Sync.MissingChannels.Count} channel ekleniyor...");
 
+            // 10'ar 10'ar grupla
+            var batches = _metrics.Sync.MissingChannels
+                .Select((channel, index) => new { channel, index })
+                .GroupBy(x => x.index / 10)
+                .Select(g => g.Select(x => x.channel).ToList());
+
+            int batchNumber = 1;
+            foreach (var batch in batches)
+            {
+                _logger.LogInformation($"🚀 Batch {batchNumber} başlatılıyor ({batch.Count} channel)...");
+
+                var tasks = batch.Select(async channelName =>
+                {
+                    _logger.LogInformation($"🔨 Channel ekleniyor: {channelName}");
+
+                    // Bu channel'a ait ilk device'ı bul (channel JSON'u için)
+                    var sampleDevice = _metrics.Sync.DatabaseDevices.FirstOrDefault(d => d.ChannelName == channelName);
+                    if (sampleDevice == null)
+                    {
+                        _logger.LogError($"❌ Channel {channelName} için örnek device bulunamadı");
+                        _metrics.Sync.FailedChannels.Add(channelName);
+                        return "FAILED";
+                    }
+
+                    var result = await _restApiManager.ChannelPostAsync(sampleDevice.ChannelJson);
+
+                    if (result == "Success")
+                    {
+                        _logger.LogInformation($"✅ Channel eklendi: {channelName}");
+                        _metrics.Sync.AddedChannels.Add(channelName);
+                    }
+                    else if (result == "Exist")
+                    {
+                        _logger.LogInformation($"ℹ️ Channel zaten mevcut: {channelName}");
+                        _metrics.Sync.AlreadyExistingChannels.Add(channelName);
+                    }
+                    else
+                    {
+                        _logger.LogError($"❌ Channel eklenemedi: {channelName}, Result: {result}");
+                        _metrics.Sync.FailedChannels.Add(channelName);
+                    }
+
+                    return result;
+                });
+
+                // Batch'teki tüm task'ler paralel çalışsın
+                var results = await Task.WhenAll(tasks);
+
+                _logger.LogInformation($"✅ Batch {batchNumber} tamamlandı - Başarılı: {results.Count(r => r == "Success")}, Mevcut: {results.Count(r => r == "Exist")}, Hatalı: {results.Count(r => r.StartsWith("FAILED"))}");
+
+                // Batch'ler arası bekleme
+                if (batchNumber < batches.Count())
+                {
+                    _logger.LogInformation("⏳ Sonraki batch için 2 saniye bekleniyor...");
+                    await Task.Delay(2000);
+                }
+
+                batchNumber++;
+            }
+
+            _logger.LogInformation($"🎯 Batch işlem tamamlandı - Toplam: {_metrics.Sync.AddedChannels.Count} eklendi, {_metrics.Sync.AlreadyExistingChannels.Count} zaten mevcut, {_metrics.Sync.FailedChannels.Count} hatalı");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Batch channel ekleme hatası");
+        }
+    }
+    private async Task AddMissingDevicesBatch()
+    {
+        try
+        {
+            _logger.LogInformation($"📦 Batch mode ile {_metrics.Sync.MissingDevices.Count} device ekleniyor...");
+
+            // 5'er 5'er grupla (device'lar daha ağır)
+            var batches = _metrics.Sync.MissingDevices
+                .Select((device, index) => new { device, index })
+                .GroupBy(x => x.index / 5)
+                .Select(g => g.Select(x => x.device).ToList());
+
+            int batchNumber = 1;
+            foreach (var batch in batches)
+            {
+                _logger.LogInformation($"🚀 Device Batch {batchNumber} başlatılıyor ({batch.Count} device)...");
+
+                var tasks = batch.Select(async device =>
+                {
+                    _logger.LogInformation($"🔨 Device ekleniyor: {device.ChannelName}.{device.DeviceId}");
+
+                    var result = await _restApiManager.DevicePostAsync(device.DeviceJson, device.ChannelName);
+
+                    if (result == "Success")
+                    {
+                        _logger.LogInformation($"✅ Device eklendi: {device.ChannelName}.{device.DeviceId}");
+                        _metrics.Sync.AddedDevices.Add(device);
+
+                        // Tag'leri de ekle
+                        await AddDeviceTagsAsync(device);
+                    }
+                    else if (result == "Exist")
+                    {
+                        _logger.LogInformation($"ℹ️ Device zaten mevcut: {device.ChannelName}.{device.DeviceId}");
+                        _metrics.Sync.AlreadyExistingDevices.Add(device);
+                    }
+                    else
+                    {
+                        _logger.LogError($"❌ Device eklenemedi: {device.ChannelName}.{device.DeviceId}, Result: {result}");
+                        _metrics.Sync.FailedDevices.Add(device);
+                    }
+
+                    return result;
+                });
+
+                await Task.WhenAll(tasks);
+
+                // Batch'ler arası daha fazla bekleme (device'lar ağır)
+                if (batchNumber < batches.Count())
+                {
+                    _logger.LogInformation("⏳ Sonraki device batch için 3 saniye bekleniyor...");
+                    await Task.Delay(3000);
+                }
+
+                batchNumber++;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Device batch ekleme hatası");
+        }
+    }
     private async Task AddMissingChannelsAsync()
     {
         try
