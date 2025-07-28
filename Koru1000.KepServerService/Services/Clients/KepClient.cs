@@ -370,42 +370,12 @@ public class KepClient : IDisposable
     {
         try
         {
-            _logger.LogInformation($"Client {_clientId} için tag'ler sorgulanıyor...");
+            _logger.LogInformation($"🏷️ Client {_clientId} için tag'ler sorgulanıyor...");
 
-            // Önce client'ın device'larını kontrol et
-            const string deviceCheckSql = @"
-            SELECT cd.id, cd.channelName, cd.clientId, cd.statusCode 
-            FROM channeldevice cd 
-            WHERE cd.clientId = @ClientId";
+            // STORED PROCEDURE kullanarak doğru tag'leri al
+            const string sql = @"CALL sp_getClientSubscriptionList(@p_clientId)";
 
-            var devices = await _dbManager.QueryExchangerAsync<dynamic>(deviceCheckSql, new { ClientId = _clientId });
-            _logger.LogInformation($"Client {_clientId} için {devices.Count()} device bulundu");
-
-            if (!devices.Any())
-            {
-                _logger.LogWarning($"Client {_clientId} için hiç device bulunamadı!");
-                return new List<KepTagInfo>();
-            }
-
-            // Direct query kullan - LIMIT'i kaldır
-            const string sql = @"
-            SELECT dtt.id AS DeviceTagId, d.channelName AS ChannelName, CONCAT(d.id) AS DeviceName, 
-                   JSON_UNQUOTE(JSON_EXTRACT(dtt.tagJson, '$.""common.ALLTYPES_NAME""')) AS TagName
-            FROM channeldevice d
-            INNER JOIN devicetypetag dtt ON dtt.deviceTypeId = d.deviceTypeId
-            WHERE d.clientId = @ClientId AND d.statusCode IN (11,31,41,61) 
-            
-            UNION ALL
-            
-            SELECT dit.id AS DeviceTagId, d.channelName AS ChannelName, CONCAT(d.id) AS DeviceName, 
-                   JSON_UNQUOTE(JSON_EXTRACT(dit.tagJson, '$.""common.ALLTYPES_NAME""')) AS TagName
-            FROM channeldevice d
-            INNER JOIN deviceindividualtag dit ON dit.channelDeviceId = d.id
-            WHERE d.clientId = @ClientId AND d.statusCode IN (11,31,41,61)
-            ORDER BY DeviceName, TagName";
-
-            var results = await _dbManager.QueryExchangerAsync<dynamic>(sql, new { ClientId = _clientId });
-            _logger.LogInformation($"Client {_clientId} için direct query {results.Count()} tag döndü");
+            var results = await _dbManager.QueryExchangerAsync<dynamic>(sql, new { p_clientId = _clientId });
 
             var tags = results.Where(r => !string.IsNullOrEmpty(r.TagName?.ToString()))
                              .Select(r => new KepTagInfo
@@ -417,18 +387,38 @@ public class KepClient : IDisposable
                                  TagName = r.TagName ?? ""
                              }).ToList();
 
-            if (tags.Count > 0)
+            _logger.LogInformation($"📊 Client {_clientId} Tag İstatistikleri:");
+            _logger.LogInformation($"   • Toplam tag: {tags.Count:N0}");
+
+            // Channel başına tag sayısı
+            var channelTagCounts = tags.GroupBy(t => t.ChannelName)
+                                      .ToDictionary(g => g.Key, g => g.Count());
+
+            _logger.LogInformation($"   • Channel sayısı: {channelTagCounts.Count}");
+            foreach (var kvp in channelTagCounts.OrderByDescending(x => x.Value).Take(5))
             {
-                var firstTag = tags.First();
-                _logger.LogInformation($"İlk tag örneği: Channel={firstTag.ChannelName}, Device={firstTag.DeviceName}, Tag={firstTag.TagName}");
-                _logger.LogInformation($"Client {_clientId} toplam {tags.Count} tag bulundu");
+                _logger.LogInformation($"     - {kvp.Key}: {kvp.Value:N0} tag");
+            }
+
+            // Beklenen 370K'dan ne kadarını alıyoruz?
+            var expectedTagsForClient = 370323 / 14; // Yaklaşık olarak
+            var percentage = (double)tags.Count / expectedTagsForClient * 100;
+
+            _logger.LogInformation($"📈 Client {_clientId} Coverage:");
+            _logger.LogInformation($"   • Beklenen (yaklaşık): {expectedTagsForClient:N0} tag");
+            _logger.LogInformation($"   • Bulunan: {tags.Count:N0} tag");
+            _logger.LogInformation($"   • Coverage: %{percentage:F1}");
+
+            if (percentage < 80)
+            {
+                _logger.LogWarning($"⚠️ Client {_clientId} düşük tag coverage - bazı device'lar eksik olabilir");
             }
 
             return tags;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Client {_clientId} tag'leri alınamadı");
+            _logger.LogError(ex, $"❌ Client {_clientId} tag'leri alınamadı");
             return new List<KepTagInfo>();
         }
     }

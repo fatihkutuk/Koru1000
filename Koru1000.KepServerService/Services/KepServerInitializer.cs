@@ -13,32 +13,36 @@ public class KepServerInitializer : IKepServerInitializer
     private readonly KepServiceConfig _config;
     private readonly Koru1000.DatabaseManager.DatabaseManager _dbManager;
     private readonly ILogger<KepServerInitializer> _logger;
-    private readonly IKepRestApiManager _restApiManager; // Ekleyin
+    private readonly IKepRestApiManager _restApiManager;
     private Session? _session;
     private ApplicationConfiguration? _appConfig;
     private DriverInfo? _driverInfo;
 
+    // Metrikler için properties
+    private SyncMetrics _metrics = new SyncMetrics();
+
     public KepServerInitializer(
         KepServiceConfig config,
         Koru1000.DatabaseManager.DatabaseManager dbManager,
-        IKepRestApiManager restApiManager, // Ekleyin
+        IKepRestApiManager restApiManager,
         ILogger<KepServerInitializer> logger)
     {
         _config = config;
         _dbManager = dbManager;
-        _restApiManager = restApiManager; // Ekleyin
+        _restApiManager = restApiManager;
         _logger = logger;
     }
+
     public async Task<bool> InitializeKepServerAsync()
     {
         try
         {
-            _logger.LogInformation("KEP Server başlatılıyor...");
+            _logger.LogInformation("🚀 KEP Server başlatılıyor...");
 
             // Driver ayarlarını veritabanından yükle
             if (!await LoadDriverSettingsAsync())
             {
-                _logger.LogError("Driver ayarları yüklenemedi");
+                _logger.LogError("❌ Driver ayarları yüklenemedi");
                 return false;
             }
 
@@ -46,32 +50,32 @@ public class KepServerInitializer : IKepServerInitializer
             {
                 if (!await RestartKepServerServiceAsync())
                 {
-                    _logger.LogError("KEP Server servisi başlatılamadı");
+                    _logger.LogError("❌ KEP Server servisi başlatılamadı");
                     return false;
                 }
 
-                _logger.LogInformation($"KEP Server restart delay: {_config.KepServerRestartDelay}ms");
+                _logger.LogInformation($"⏳ KEP Server restart delay: {_config.KepServerRestartDelay}ms");
                 await Task.Delay(_config.KepServerRestartDelay);
             }
 
             if (!await CreateOpcSessionAsync())
             {
-                _logger.LogError("OPC UA Session oluşturulamadı");
+                _logger.LogError("❌ OPC UA Session oluşturulamadı");
                 return false;
             }
 
             if (!await SyncServerConfigurationAsync())
             {
-                _logger.LogError("Server konfigürasyonu senkronize edilemedi");
+                _logger.LogError("❌ Server konfigürasyonu senkronize edilemedi");
                 return false;
             }
 
-            _logger.LogInformation("KEP Server başarıyla başlatıldı");
+            _logger.LogInformation("✅ KEP Server başarıyla başlatıldı");
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "KEP Server başlatılamadı");
+            _logger.LogError(ex, "💥 KEP Server başlatılamadı");
             return false;
         }
     }
@@ -80,6 +84,8 @@ public class KepServerInitializer : IKepServerInitializer
     {
         try
         {
+            _logger.LogInformation("📚 Driver ayarları yükleniyor...");
+
             const string sql = @"
                 SELECT d.id, d.name, dt.name as driverTypeName, d.customSettings
                 FROM driver d
@@ -93,7 +99,7 @@ public class KepServerInitializer : IKepServerInitializer
 
             if (driverData == null)
             {
-                _logger.LogError("KEPSERVEREX driver bulunamadı");
+                _logger.LogError("❌ KEPSERVEREX driver bulunamadı");
                 return false;
             }
 
@@ -113,11 +119,11 @@ public class KepServerInitializer : IKepServerInitializer
                         driverData.customSettings.ToString(),
                         new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new DriverCustomSettings();
 
-                    _logger.LogInformation($"Driver ayarları yüklendi - Endpoint: {_driverInfo.CustomSettings.EndpointUrl}, Security: {_driverInfo.CustomSettings.Security.Mode}");
+                    _logger.LogInformation($"✅ Driver ayarları yüklendi - Endpoint: {_driverInfo.CustomSettings.EndpointUrl}, Security: {_driverInfo.CustomSettings.Security.Mode}");
                 }
                 catch (JsonException ex)
                 {
-                    _logger.LogError(ex, "CustomSettings JSON parse hatası, default ayarlar kullanılıyor");
+                    _logger.LogError(ex, "⚠️ CustomSettings JSON parse hatası, default ayarlar kullanılıyor");
                     _driverInfo.CustomSettings = new DriverCustomSettings();
                 }
             }
@@ -126,7 +132,7 @@ public class KepServerInitializer : IKepServerInitializer
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Driver ayarları yüklenirken hata");
+            _logger.LogError(ex, "💥 Driver ayarları yüklenirken hata");
             return false;
         }
     }
@@ -137,16 +143,16 @@ public class KepServerInitializer : IKepServerInitializer
         {
             if (_driverInfo?.CustomSettings == null)
             {
-                _logger.LogError("Driver ayarları yüklenmemiş");
+                _logger.LogError("❌ Driver ayarları yüklenmemiş");
                 return false;
             }
 
             await CreateApplicationConfigurationAsync();
 
             var endpointUrl = _driverInfo.CustomSettings.EndpointUrl;
-            _logger.LogInformation($"OPC UA bağlantısı kuruluyor: {endpointUrl}");
-            _logger.LogInformation($"Security Mode: {_driverInfo.CustomSettings.Security.Mode}");
-            _logger.LogInformation($"User: {_driverInfo.CustomSettings.Credentials.Username}");
+            _logger.LogInformation($"🔗 OPC UA bağlantısı kuruluyor: {endpointUrl}");
+            _logger.LogInformation($"🔒 Security Mode: {_driverInfo.CustomSettings.Security.Mode}");
+            _logger.LogInformation($"👤 User: {_driverInfo.CustomSettings.Credentials.Username}");
 
             // Security ayarına göre endpoint seç
             bool useSecurity = _driverInfo.CustomSettings.Security.Mode != "None";
@@ -165,12 +171,12 @@ public class KepServerInitializer : IKepServerInitializer
                 userIdentity = new UserIdentity(
                     _driverInfo.CustomSettings.Credentials.Username,
                     _driverInfo.CustomSettings.Credentials.Password);
-                _logger.LogInformation($"Username authentication kullanılıyor: {_driverInfo.CustomSettings.Credentials.Username}");
+                _logger.LogInformation($"🔐 Username authentication kullanılıyor: {_driverInfo.CustomSettings.Credentials.Username}");
             }
             else
             {
                 userIdentity = new UserIdentity();
-                _logger.LogInformation("Anonymous authentication kullanılıyor");
+                _logger.LogInformation("🔓 Anonymous authentication kullanılıyor");
             }
 
             _session = await Session.Create(
@@ -182,12 +188,12 @@ public class KepServerInitializer : IKepServerInitializer
                 userIdentity,
                 null);
 
-            _logger.LogInformation("OPC UA Session başarıyla oluşturuldu");
+            _logger.LogInformation("✅ OPC UA Session başarıyla oluşturuldu");
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "OPC UA Session oluşturulamadı");
+            _logger.LogError(ex, "💥 OPC UA Session oluşturulamadı");
             return false;
         }
     }
@@ -262,12 +268,11 @@ public class KepServerInitializer : IKepServerInitializer
         };
     }
 
-    // RestartKepServerServiceAsync metodunu aynı bırakın...
     public async Task<bool> RestartKepServerServiceAsync()
     {
         try
         {
-            _logger.LogInformation($"KEP Server servisi yeniden başlatılıyor: {_config.KepServerServiceName}");
+            _logger.LogInformation($"🔄 KEP Server servisi yeniden başlatılıyor: {_config.KepServerServiceName}");
 
             using var service = new ServiceController(_config.KepServerServiceName);
 
@@ -276,288 +281,824 @@ public class KepServerInitializer : IKepServerInitializer
             switch (service.Status)
             {
                 case ServiceControllerStatus.Running:
-                    _logger.LogInformation("Servis durduruluyor...");
+                    _logger.LogInformation("⏹️ Servis durduruluyor...");
                     service.Stop();
                     service.WaitForStatus(ServiceControllerStatus.Stopped, timeout);
                     break;
 
                 case ServiceControllerStatus.StopPending:
-                    _logger.LogInformation("Servisin durması bekleniyor...");
+                    _logger.LogInformation("⏳ Servisin durması bekleniyor...");
                     service.WaitForStatus(ServiceControllerStatus.Stopped, timeout);
                     break;
             }
 
             if (service.Status == ServiceControllerStatus.Stopped)
             {
-                _logger.LogInformation("Servis başlatılıyor...");
+                _logger.LogInformation("▶️ Servis başlatılıyor...");
                 service.Start();
                 service.WaitForStatus(ServiceControllerStatus.Running, timeout);
             }
 
             var isRunning = service.Status == ServiceControllerStatus.Running;
-            _logger.LogInformation($"KEP Server servisi durumu: {service.Status}");
+            _logger.LogInformation($"📊 KEP Server servisi durumu: {service.Status}");
 
             return isRunning;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"KEP Server servisi yeniden başlatılamadı: {_config.KepServerServiceName}");
+            _logger.LogError(ex, $"💥 KEP Server servisi yeniden başlatılamadı: {_config.KepServerServiceName}");
             return false;
         }
     }
 
-    // Diğer metodları aynı bırakın...
     public async Task<bool> SyncServerConfigurationAsync()
     {
         try
         {
-            _logger.LogInformation("Server konfigürasyonu senkronize ediliyor...");
+            _logger.LogInformation("🔄 Server konfigürasyonu senkronize ediliyor...");
 
-            // KEP Server'dan mevcut yapıyı oku
-            var kepChannels = await GetKepServerChannelsAsync();
-            _logger.LogInformation($"KEP Server'da {kepChannels.Count} channel bulundu");
+            _metrics = new SyncMetrics();
+            var syncStartTime = DateTime.Now;
 
-            // Veritabanından aktif device'ları al
-            var activeDevices = await GetActiveDevicesAsync();
-            _logger.LogInformation($"Veritabanında {activeDevices.Count} aktif device bulundu");
+            // 1. Detaylı analizler
+            var tagAnalysis = await AnalyzeTagCountsAsync();
+            var clientAnalysis = await AnalyzeClientIssuesAsync();
 
-            // Eksik channel'ları ekle
-            await SyncChannelsAsync(kepChannels, activeDevices);
+            // 2. Database metrikleri
+            await CollectDatabaseMetricsAsync();
 
-            // Eksik device'ları ekle  
-            await SyncDevicesAsync(kepChannels, activeDevices);
+            // 3. KEP Server metrikleri
+            await CollectKepServerMetricsAsync();
 
-            // Client'lara device'ları dağıt
-            await DistributeDevicesToClientsAsync(activeDevices);
+            // 4. Senkronizasyon
+            await PerformDetailedSyncAsync();
 
-            _logger.LogInformation("Server konfigürasyonu başarıyla senkronize edildi");
+            // 5. Client dağıtımı - EKSİK CLIENT'LARI DÜZELT
+            await FixMissingClientsAsync(clientAnalysis);
+
+            // 6. Final kontrol
+            await CollectFinalMetricsAsync();
+
+            _metrics.TotalSyncDuration = DateTime.Now - syncStartTime;
+
+            // 7. Tag sayısı uyarısı
+            if (tagAnalysis.DatabaseTotalExpectedTags > 200000)
+            {
+                _logger.LogWarning($"⚠️ ÇOK FAZLA TAG: {tagAnalysis.DatabaseTotalExpectedTags:N0} tag bekleniyor!");
+                _logger.LogWarning($"   KEP Server performans sorunları yaşayabilir");
+                _logger.LogWarning($"   Tag sayısını azaltmayı veya client sayısını artırmayı düşünün");
+            }
+
+            LogFinalReport();
+            LogTagDiscrepancy(tagAnalysis);
+
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Server konfigürasyonu senkronize edilemedi");
+            _logger.LogError(ex, "💥 Server konfigürasyonu senkronize edilemedi");
             return false;
         }
     }
-    private async Task SyncChannelsAsync(HashSet<string> kepChannels, List<KepDeviceInfo> activeDevices)
+
+    private async Task<TagAnalysisResult> AnalyzeTagCountsAsync()
     {
         try
         {
-            var requiredChannels = activeDevices.Select(d => d.ChannelName).Distinct();
+            _logger.LogInformation("🏷️ Tag analizi başlatılıyor...");
 
-            foreach (var channelName in requiredChannels)
+            var result = new TagAnalysisResult();
+
+            // Database'den tag sayıları
+            const string tagCountSql = @"
+                SELECT 
+                    COUNT(*) as TotalActiveDevices,
+                    SUM(CASE WHEN dt.allTagJsons IS NOT NULL AND dt.allTagJsons != '[]' THEN JSON_LENGTH(dt.allTagJsons) ELSE 0 END) as TypeTagCount,
+                    SUM(CASE WHEN cd.individualTags IS NOT NULL AND cd.individualTags != '[]' THEN JSON_LENGTH(cd.individualTags) ELSE 0 END) as IndividualTagCount
+                FROM channeldevice cd
+                LEFT JOIN devicetype dt ON cd.deviceTypeId = dt.id
+                WHERE cd.statusCode IN (11,31,41,51,61)";
+
+            var tagCounts = await _dbManager.QueryFirstExchangerAsync<dynamic>(tagCountSql);
+            result.DatabaseActiveDevices = (int)tagCounts.TotalActiveDevices;
+            result.DatabaseTypeTagCount = (long)(tagCounts.TypeTagCount ?? 0);
+            result.DatabaseIndividualTagCount = (long)(tagCounts.IndividualTagCount ?? 0);
+            result.DatabaseTotalExpectedTags = result.DatabaseTypeTagCount + result.DatabaseIndividualTagCount;
+
+            // Device başına detaylı analiz
+            const string deviceTagSql = @"
+                SELECT 
+                    cd.id as DeviceId,
+                    cd.channelName,
+                    cd.statusCode,
+                    cd.clientId,
+                    CASE WHEN dt.allTagJsons IS NOT NULL AND dt.allTagJsons != '[]' THEN JSON_LENGTH(dt.allTagJsons) ELSE 0 END as TypeTags,
+                    CASE WHEN cd.individualTags IS NOT NULL AND cd.individualTags != '[]' THEN JSON_LENGTH(cd.individualTags) ELSE 0 END as IndividualTags
+                FROM channeldevice cd
+                LEFT JOIN devicetype dt ON cd.deviceTypeId = dt.id
+                WHERE cd.statusCode IN (11,31,41,51,61)
+                ORDER BY (TypeTags + IndividualTags) DESC
+                LIMIT 20";
+
+            var deviceDetails = await _dbManager.QueryExchangerAsync<dynamic>(deviceTagSql);
+
+            foreach (var device in deviceDetails)
             {
-                if (!kepChannels.Any(c => c.StartsWith(channelName)))
+                var detail = new DeviceTagDetail
                 {
-                    _logger.LogInformation($"Channel eksik: {channelName} - REST API ile eklenecek");
+                    DeviceId = (int)device.DeviceId,
+                    ChannelName = device.channelName?.ToString() ?? "",
+                    ClientId = device.clientId ?? 0,
+                    StatusCode = (byte)device.statusCode,
+                    TypeTagCount = (int)(device.TypeTags ?? 0),
+                    IndividualTagCount = (int)(device.IndividualTags ?? 0)
+                };
+                detail.TotalTags = detail.TypeTagCount + detail.IndividualTagCount;
+                result.TopDevices.Add(detail);
+            }
 
-                    var device = activeDevices.First(d => d.ChannelName == channelName);
-                    var result = await _restApiManager.ChannelPostAsync(device.ChannelJson);
+            // Client dağılımı
+            const string clientSql = @"
+                SELECT 
+                    cd.clientId,
+                    COUNT(*) as DeviceCount,
+                    SUM(CASE WHEN dt.allTagJsons IS NOT NULL AND dt.allTagJsons != '[]' THEN JSON_LENGTH(dt.allTagJsons) ELSE 0 END) as TypeTags,
+                    SUM(CASE WHEN cd.individualTags IS NOT NULL AND cd.individualTags != '[]' THEN JSON_LENGTH(cd.individualTags) ELSE 0 END) as IndividualTags
+                FROM channeldevice cd
+                LEFT JOIN devicetype dt ON cd.deviceTypeId = dt.id
+                WHERE cd.statusCode IN (11,31,41,51,61) AND cd.clientId IS NOT NULL
+                GROUP BY cd.clientId
+                ORDER BY cd.clientId";
 
-                    if (result == "Success" || result == "Exist")
+            var clientDetails = await _dbManager.QueryExchangerAsync<dynamic>(clientSql);
+
+            foreach (var client in clientDetails)
+            {
+                var detail = new ClientTagDetail
+                {
+                    ClientId = (int)client.clientId,
+                    DeviceCount = (int)client.DeviceCount,
+                    TypeTagCount = (long)(client.TypeTags ?? 0),
+                    IndividualTagCount = (long)(client.IndividualTags ?? 0)
+                };
+                detail.TotalTags = detail.TypeTagCount + detail.IndividualTagCount;
+                result.ClientDistribution.Add(detail);
+            }
+
+            _logger.LogInformation($"📊 TAG ANALİZİ:");
+            _logger.LogInformation($"   • Aktif device sayısı: {result.DatabaseActiveDevices}");
+            _logger.LogInformation($"   • Type tag sayısı: {result.DatabaseTypeTagCount:N0}");
+            _logger.LogInformation($"   • Individual tag sayısı: {result.DatabaseIndividualTagCount:N0}");
+            _logger.LogInformation($"   • TOPLAM BEKLENEN: {result.DatabaseTotalExpectedTags:N0}");
+            _logger.LogInformation($"   • Client sayısı: {result.ClientDistribution.Count}");
+
+            _logger.LogInformation($"📈 EN BÜYÜK DEVICE'LAR:");
+            foreach (var device in result.TopDevices.Take(10))
+            {
+                _logger.LogInformation($"   • Device {device.DeviceId} (Client {device.ClientId}): {device.TotalTags:N0} tag ({device.TypeTagCount:N0}+{device.IndividualTagCount:N0})");
+            }
+
+            _logger.LogInformation($"👥 CLIENT DAĞILIMI:");
+            foreach (var client in result.ClientDistribution)
+            {
+                _logger.LogInformation($"   • Client {client.ClientId}: {client.DeviceCount} device, {client.TotalTags:N0} tag");
+            }
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Tag analizi hatası");
+            return new TagAnalysisResult();
+        }
+    }
+
+    private async Task<ClientAnalysisResult> AnalyzeClientIssuesAsync()
+    {
+        try
+        {
+            _logger.LogInformation("👥 Client analizi başlatılıyor...");
+
+            var result = new ClientAnalysisResult();
+
+            // Database'de client'lar
+            const string dbClientSql = @"
+                SELECT DISTINCT clientId, COUNT(*) as DeviceCount
+                FROM channeldevice 
+                WHERE clientId IS NOT NULL AND statusCode IN (11,31,41,51,61)
+                GROUP BY clientId
+                ORDER BY clientId";
+
+            var dbClients = await _dbManager.QueryExchangerAsync<dynamic>(dbClientSql);
+
+            foreach (var client in dbClients)
+            {
+                result.DatabaseClients.Add(new ClientInfo
+                {
+                    ClientId = (int)client.clientId,
+                    DeviceCount = (int)client.DeviceCount,
+                    Source = "Database"
+                });
+            }
+
+            // Null client'lar
+            const string nullClientSql = @"
+                SELECT COUNT(*) as NullClientDevices
+                FROM channeldevice 
+                WHERE clientId IS NULL AND statusCode IN (11,31,41,51,61)";
+
+            var nullCount = await _dbManager.QueryFirstExchangerAsync<int>(nullClientSql);
+            result.DevicesWithoutClient = nullCount;
+
+            _logger.LogInformation($"👥 CLIENT ANALİZİ:");
+            _logger.LogInformation($"   • Database'de client sayısı: {result.DatabaseClients.Count}");
+            _logger.LogInformation($"   • Client'siz device sayısı: {result.DevicesWithoutClient}");
+
+            foreach (var client in result.DatabaseClients)
+            {
+                _logger.LogInformation($"   • Client {client.ClientId}: {client.DeviceCount} device");
+            }
+
+            if (result.DevicesWithoutClient > 0)
+            {
+                _logger.LogWarning($"⚠️ {result.DevicesWithoutClient} device'ın client'ı yok - bunlar KEP'te görünmeyecek!");
+            }
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Client analizi hatası");
+            return new ClientAnalysisResult();
+        }
+    }
+
+    private async Task CollectDatabaseMetricsAsync()
+    {
+        try
+        {
+            _logger.LogInformation("📊 Veritabanı metrikleri toplanıyor...");
+
+            // Toplam sayılar
+            const string totalSql = @"
+                SELECT 
+                    COUNT(DISTINCT channelName) as TotalChannels,
+                    COUNT(*) as TotalDevices,
+                    COUNT(DISTINCT deviceTypeId) as TotalDeviceTypes
+                FROM channeldevice";
+
+            var totals = await _dbManager.QueryFirstExchangerAsync<dynamic>(totalSql);
+            _metrics.Database.TotalChannels = (int)totals.TotalChannels;
+            _metrics.Database.TotalDevices = (int)totals.TotalDevices;
+            _metrics.Database.TotalDeviceTypes = (int)totals.TotalDeviceTypes;
+
+            // Aktif sayılar
+            const string activeSql = @"
+                SELECT 
+                    COUNT(DISTINCT channelName) as ActiveChannels,
+                    COUNT(*) as ActiveDevices
+                FROM channeldevice 
+                WHERE statusCode IN (11,31,41,61)";
+
+            var actives = await _dbManager.QueryFirstExchangerAsync<dynamic>(activeSql);
+            _metrics.Database.ActiveChannels = (int)actives.ActiveChannels;
+            _metrics.Database.ActiveDevices = (int)actives.ActiveDevices;
+
+            // Status dağılımı
+            const string statusSql = @"
+                SELECT statusCode, COUNT(*) as Count
+                FROM channeldevice 
+                GROUP BY statusCode 
+                ORDER BY statusCode";
+
+            var statusResults = await _dbManager.QueryExchangerAsync<dynamic>(statusSql);
+            foreach (var status in statusResults)
+            {
+                _metrics.Database.StatusDistribution[(byte)status.statusCode] = (int)status.Count;
+            }
+
+            // Tag sayıları
+            const string tagSql = @"
+                SELECT 
+                    (SELECT COUNT(*) FROM devicetypetag) as TypeTags,
+                    (SELECT COUNT(*) FROM deviceindividualtag) as IndividualTags";
+
+            var tags = await _dbManager.QueryFirstExchangerAsync<dynamic>(tagSql);
+            _metrics.Database.TotalTypeTags = (int)tags.TypeTags;
+            _metrics.Database.TotalIndividualTags = (int)tags.IndividualTags;
+
+            _logger.LogInformation($"📈 Database Metrics:");
+            _logger.LogInformation($"   • Total Channels: {_metrics.Database.TotalChannels}");
+            _logger.LogInformation($"   • Active Channels: {_metrics.Database.ActiveChannels}");
+            _logger.LogInformation($"   • Total Devices: {_metrics.Database.TotalDevices}");
+            _logger.LogInformation($"   • Active Devices: {_metrics.Database.ActiveDevices}");
+            _logger.LogInformation($"   • Type Tags: {_metrics.Database.TotalTypeTags}");
+            _logger.LogInformation($"   • Individual Tags: {_metrics.Database.TotalIndividualTags}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Database metrik toplama hatası");
+        }
+    }
+
+    private async Task CollectKepServerMetricsAsync()
+    {
+        try
+        {
+            _logger.LogInformation("🔍 KEP Server metrikleri toplanıyor...");
+            var browseStartTime = DateTime.Now;
+
+            // KEP Server'dan yapıyı oku
+            _metrics.KepServer.AllPaths = await GetKepServerChannelsAsync();
+            _metrics.KepServer.BrowseDuration = DateTime.Now - browseStartTime;
+
+            // Channel'ları ve device'ları ayır
+            foreach (var path in _metrics.KepServer.AllPaths)
+            {
+                if (path.Contains('.'))
+                {
+                    // Bu bir device path'i (Channel.Device)
+                    var parts = path.Split('.');
+                    if (parts.Length == 2)
                     {
-                        _logger.LogInformation($"Channel eklendi: {channelName}");
+                        var channelName = parts[0];
+                        _metrics.KepServer.ChannelNames.Add(channelName);
+                        _metrics.KepServer.DevicePaths.Add(path);
                     }
-                    else
-                    {
-                        _logger.LogError($"Channel eklenemedi: {channelName}, Result: {result}");
-                    }
-
-                    await Task.Delay(100); // API rate limiting için
+                }
+                else
+                {
+                    // Bu sadece channel
+                    _metrics.KepServer.ChannelNames.Add(path);
                 }
             }
+
+            _logger.LogInformation($"🔍 KEP Server Metrics:");
+            _logger.LogInformation($"   • Browse Duration: {_metrics.KepServer.BrowseDuration.TotalMilliseconds:F0}ms");
+            _logger.LogInformation($"   • Total Paths: {_metrics.KepServer.AllPaths.Count}");
+            _logger.LogInformation($"   • Unique Channels: {_metrics.KepServer.ChannelNames.Count}");
+            _logger.LogInformation($"   • Device Paths: {_metrics.KepServer.DevicePaths.Count}");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Channel sync hatası");
-        }
-    }
-    private async Task SyncDevicesAsync(HashSet<string> kepChannels, List<KepDeviceInfo> activeDevices)
-    {
-        try
-        {
-            foreach (var device in activeDevices)
-            {
-                var devicePath = $"{device.ChannelName}.{device.DeviceId}";
-
-                if (!kepChannels.Contains(devicePath))
-                {
-                    _logger.LogInformation($"Device eksik: {devicePath} - REST API ile eklenecek");
-
-                    var result = await _restApiManager.DevicePostAsync(device.DeviceJson, device.ChannelName);
-
-                    if (result == "Success" || result == "Exist")
-                    {
-                        // Individual tag'leri ekle
-                        var individualTagList = await GetDeviceIndividualTagJsonAsync(device.DeviceId);
-                        if (!string.IsNullOrEmpty(individualTagList))
-                        {
-                            await _restApiManager.TagPostAsync(individualTagList, device.ChannelName, device.DeviceId.ToString());
-                        }
-
-                        // Device type tag'leri ekle
-                        var tagJsonList = await GetDeviceTagJsonAsync(device.DeviceId);
-                        if (!string.IsNullOrEmpty(tagJsonList))
-                        {
-                            await _restApiManager.TagPostAsync(tagJsonList, device.ChannelName, device.DeviceId.ToString());
-                        }
-
-                        _logger.LogInformation($"Device eklendi: {devicePath}");
-                    }
-                    else
-                    {
-                        _logger.LogError($"Device eklenemedi: {devicePath}, Result: {result}");
-                    }
-
-                    await Task.Delay(200); // API rate limiting için
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Device sync hatası");
-        }
-    }
-    private async Task<string> GetDeviceTagJsonAsync(int deviceId)
-    {
-        try
-        {
-            const string sql = "CALL sp_getDeviceTagjSons(@p_deviceId)";
-            var result = await _dbManager.QueryFirstExchangerAsync<string>(sql, new { p_deviceId = deviceId });
-            return result ?? "[]";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, $"Device tag JSON alınamadı: {deviceId}");
-            return "[]";
+            _logger.LogError(ex, "💥 KEP Server metrik toplama hatası");
         }
     }
 
-    private async Task<string> GetDeviceIndividualTagJsonAsync(int deviceId)
-    {
-        try
-        {
-            const string sql = "CALL sp_getDeviceIndividualTagJsons(@p_deviceId)";
-            var result = await _dbManager.QueryFirstExchangerAsync<string>(sql, new { p_deviceId = deviceId });
-            return result ?? "[]";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, $"Device individual tag JSON alınamadı: {deviceId}");
-            return "[]";
-        }
-    }
-    private async Task DistributeDevicesToClientsAsync(List<KepDeviceInfo> activeDevices)
-    {
-        try
-        {
-            // Driver ayarlarından değil, sabit 80 device per client
-            var devicesPerClient = 80; // Sabit değer
-            var clientCount = (int)Math.Ceiling((double)activeDevices.Count / devicesPerClient);
-
-            _logger.LogInformation($"Device'lar {clientCount} client'a dağıtılıyor (Client başına max {devicesPerClient} device)");
-
-            for (int clientId = 1; clientId <= clientCount; clientId++)
-            {
-                var clientDevices = activeDevices
-                    .Skip((clientId - 1) * devicesPerClient)
-                    .Take(devicesPerClient)
-                    .Select(d => d.DeviceId.ToString())
-                    .ToList();
-
-                if (clientDevices.Any())
-                {
-                    const string sql = "CALL sp_setClientIdToDevices(@ClientId, @DeviceIds)";
-                    await _dbManager.ExecuteExchangerAsync(sql, new
-                    {
-                        ClientId = clientId,
-                        DeviceIds = string.Join(",", clientDevices)
-                    });
-
-                    _logger.LogInformation($"Client {clientId}: {clientDevices.Count} device atandı");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Device'lar client'lara dağıtılamadı");
-        }
-    }
-
-    // Diğer helper metodları aynı bırakın...
     private async Task<HashSet<string>> GetKepServerChannelsAsync()
     {
-        var channels = new HashSet<string>();
+        var validPaths = new HashSet<string>();
 
-        if (_session == null) return channels;
+        if (_session == null) return validPaths;
 
         try
         {
+            _logger.LogInformation("🔍 KEP Server browse başlatılıyor (SADECE Channel.Device formatı)...");
+            var startTime = DateTime.Now;
+
+            // Sadece root level'da browse et
             _session.Browse(
-                null,
-                null,
-                ObjectIds.ObjectsFolder,
-                0u,
-                BrowseDirection.Forward,
-                ReferenceTypeIds.HierarchicalReferences,
-                true,
-                (uint)NodeClass.Variable | (uint)NodeClass.Object | (uint)NodeClass.Method,
-                out var continuationPoint,
-                out var references);
+                null, null, ObjectIds.ObjectsFolder, 0u,
+                BrowseDirection.Forward, ReferenceTypeIds.HierarchicalReferences,
+                true, (uint)NodeClass.Object, // SADECE Object tipindeki node'lar
+                out var continuationPoint, out var references);
 
-            foreach (var reference in references)
+            foreach (var channelRef in references)
             {
-                if (!reference.DisplayName.Text.StartsWith("_") &&
-                    reference.DisplayName.Text != "Server")
-                {
-                    channels.Add(reference.NodeId.Identifier.ToString());
+                var channelName = channelRef.DisplayName.Text;
 
-                    // Alt düzey browse et (device'lar için)
-                    await BrowseChildNodesAsync(reference.NodeId.ToString(), channels);
+                if (channelName.StartsWith("_") || channelName == "Server")
+                    continue;
+
+                // Bu bir channel - ekle
+                validPaths.Add(channelName);
+                _logger.LogDebug($"📁 Channel bulundu: {channelName}");
+
+                // Channel'ın altındaki device'ları browse et
+                try
+                {
+                    // ExpandedNodeId'yi NodeId'ye çevir
+                    var channelNodeId = ExpandedNodeId.ToNodeId(channelRef.NodeId, _session.NamespaceUris);
+
+                    _session.Browse(
+                        null, null, channelNodeId, 0u, // Düzeltildi
+                        BrowseDirection.Forward, ReferenceTypeIds.HierarchicalReferences,
+                        true, (uint)NodeClass.Object, // SADECE Object tipindeki node'lar
+                        out var deviceContinuation, out var deviceReferences);
+
+                    var deviceCount = 0;
+                    foreach (var deviceRef in deviceReferences)
+                    {
+                        var deviceName = deviceRef.DisplayName.Text;
+
+                        // Device name'in numeric olup olmadığını kontrol et
+                        if (int.TryParse(deviceName, out _))
+                        {
+                            var devicePath = $"{channelName}.{deviceName}";
+                            validPaths.Add(devicePath);
+                            deviceCount++;
+                            _logger.LogDebug($"🔧 Device bulundu: {devicePath}");
+                        }
+                        else
+                        {
+                            _logger.LogDebug($"🏷️ Non-numeric node atlandı: {channelName}.{deviceName}");
+                        }
+                    }
+
+                    if (deviceCount > 0)
+                    {
+                        _logger.LogDebug($"📊 Channel {channelName}: {deviceCount} device bulundu");
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"⚠️ Channel {channelName}: Hiç device bulunamadı!");
+                    }
                 }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, $"⚠️ Channel {channelName} browse edilemedi");
+                }
+            }
+
+            var browseTime = DateTime.Now - startTime;
+            _logger.LogInformation($"✅ KEP Server browse tamamlandı: {validPaths.Count} path, {browseTime.TotalMilliseconds:F0}ms");
+
+            // Detaylı analiz
+            var channels = validPaths.Where(p => !p.Contains('.')).ToList();
+            var devices = validPaths.Where(p => p.Contains('.')).ToList();
+
+            _logger.LogInformation($"📊 Browse Detayları:");
+            _logger.LogInformation($"   • Channel'lar: {channels.Count}");
+            _logger.LogInformation($"   • Device'lar: {devices.Count}");
+            _logger.LogInformation($"   • Toplam path: {validPaths.Count}");
+
+            if (channels.Any())
+            {
+                _logger.LogInformation($"   • Örnek channel'lar: {string.Join(", ", channels.Take(5))}");
+            }
+
+            if (devices.Any())
+            {
+                _logger.LogInformation($"   • Örnek device'lar: {string.Join(", ", devices.Take(5))}");
+            }
+
+            // Channel başına device dağılımını göster
+            var channelDeviceCounts = new Dictionary<string, int>();
+            foreach (var device in devices)
+            {
+                var channelName = device.Split('.')[0];
+                channelDeviceCounts[channelName] = channelDeviceCounts.GetValueOrDefault(channelName, 0) + 1;
+            }
+
+            _logger.LogInformation($"📈 Channel başına device sayıları (ilk 10):");
+            foreach (var kvp in channelDeviceCounts.OrderByDescending(x => x.Value).Take(10))
+            {
+                _logger.LogInformation($"   • {kvp.Key}: {kvp.Value} device");
+            }
+
+            // Potansiyel sorunları tespit et
+            if (validPaths.Count > 10000)
+            {
+                _logger.LogWarning($"⚠️ Çok fazla path bulundu ({validPaths.Count}) - browse algoritması hala tag'leri dahil ediyor olabilir");
+            }
+
+            if (devices.Count < 500)
+            {
+                _logger.LogWarning($"⚠️ Çok az device bulundu ({devices.Count}) - bazı device'lar eksik olabilir");
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "KEP Server channels okunamadı");
+            _logger.LogError(ex, "❌ KEP Server browse hatası");
         }
 
-        return channels;
+        return validPaths;
     }
 
-    private async Task BrowseChildNodesAsync(string nodeId, HashSet<string> channels)
+    private async Task PerformDetailedSyncAsync()
     {
         try
         {
-            if (_session == null) return;
+            _logger.LogInformation("🔄 Detaylı senkronizasyon başlatılıyor...");
 
-            _session.Browse(
-                null,
-                null,
-                new NodeId(nodeId),
-                0u,
-                BrowseDirection.Forward,
-                ReferenceTypeIds.HierarchicalReferences,
-                true,
-                (uint)NodeClass.Variable | (uint)NodeClass.Object | (uint)NodeClass.Method,
-                out var continuationPoint,
-                out var references);
+            // Aktif device'ları al
+            var activeDevices = await GetActiveDevicesAsync();
+            _metrics.Sync.DatabaseDevices = activeDevices;
 
-            foreach (var reference in references)
+            // Expected vs Found karşılaştırması
+            var expectedChannels = activeDevices.Select(d => d.ChannelName).Distinct().ToHashSet();
+            var expectedDevicePaths = activeDevices.Select(d => $"{d.ChannelName}.{d.DeviceId}").ToHashSet();
+
+            _logger.LogInformation($"📊 KARŞILAŞTIRMA RAPORU:");
+            _logger.LogInformation($"   📁 CHANNEL'LAR:");
+            _logger.LogInformation($"      • Beklenen: {expectedChannels.Count}");
+            _logger.LogInformation($"      • KEP'te bulunan: {_metrics.KepServer.ChannelNames.Count}");
+
+            _logger.LogInformation($"   🔧 DEVICE'LAR:");
+            _logger.LogInformation($"      • Beklenen: {expectedDevicePaths.Count}");
+            _logger.LogInformation($"      • KEP'te bulunan: {_metrics.KepServer.DevicePaths.Count}");
+
+            // Eksik channel'ları bul
+            _metrics.Sync.MissingChannels = expectedChannels
+                .Where(expected => !_metrics.KepServer.ChannelNames.Any(kep => kep == expected))
+                .ToList();
+
+            // Eksik device'ları bul
+            _metrics.Sync.MissingDevices = activeDevices
+                .Where(device => !_metrics.KepServer.DevicePaths.Contains($"{device.ChannelName}.{device.DeviceId}"))
+                .ToList();
+
+            // Fazladan olanları da bul
+            _metrics.Sync.ExtraChannels = _metrics.KepServer.ChannelNames
+                .Where(kep => !expectedChannels.Contains(kep))
+                .ToList();
+
+            _metrics.Sync.ExtraDevices = _metrics.KepServer.DevicePaths
+                .Where(kep => !expectedDevicePaths.Contains(kep))
+                .ToList();
+
+            _logger.LogInformation($"🔍 FARK ANALİZİ:");
+            _logger.LogInformation($"   ❌ Eksik Channel'lar: {_metrics.Sync.MissingChannels.Count}");
+            _logger.LogInformation($"   ❌ Eksik Device'lar: {_metrics.Sync.MissingDevices.Count}");
+            _logger.LogInformation($"   ➕ Fazla Channel'lar: {_metrics.Sync.ExtraChannels.Count}");
+            _logger.LogInformation($"   ➕ Fazla Device'lar: {_metrics.Sync.ExtraDevices.Count}");
+
+            if (_metrics.Sync.MissingChannels.Any())
             {
-                var identifier = reference.NodeId.Identifier.ToString();
-                channels.Add(identifier);
+                _logger.LogInformation($"📋 Eksik Channel Örnekleri: {string.Join(", ", _metrics.Sync.MissingChannels.Take(5))}");
+            }
 
-                // Sadece 2 seviye derinlik (Channel.Device formatı)
-                if (identifier.Split('.').Length < 3)
+            if (_metrics.Sync.MissingDevices.Any())
+            {
+                var examples = _metrics.Sync.MissingDevices.Take(5).Select(d => $"{d.ChannelName}.{d.DeviceId}");
+                _logger.LogInformation($"📋 Eksik Device Örnekleri: {string.Join(", ", examples)}");
+            }
+
+            // Eksikleri ekle
+            if (_metrics.Sync.MissingChannels.Any() || _metrics.Sync.MissingDevices.Any())
+            {
+                await AddMissingItemsAsync();
+            }
+            else
+            {
+                _logger.LogInformation("✅ Hiç eksik item yok - senkronizasyon gerekli değil");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Detaylı senkronizasyon hatası");
+        }
+    }
+
+    private async Task AddMissingItemsAsync()
+    {
+        try
+        {
+            var addStartTime = DateTime.Now;
+
+            // Eksik channel'ları ekle
+            if (_metrics.Sync.MissingChannels.Any())
+            {
+                _logger.LogInformation($"🔨 {_metrics.Sync.MissingChannels.Count} eksik channel ekleniyor...");
+                await AddMissingChannelsAsync();
+            }
+
+            // Eksik device'ları ekle
+            if (_metrics.Sync.MissingDevices.Any())
+            {
+                _logger.LogInformation($"🔨 {_metrics.Sync.MissingDevices.Count} eksik device ekleniyor...");
+                await AddMissingDevicesAsync();
+            }
+
+            _metrics.Sync.AddDuration = DateTime.Now - addStartTime;
+
+            // Doğrulama yap
+            await ValidateAddedItemsAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Eksik item ekleme hatası");
+        }
+    }
+
+    private async Task AddMissingChannelsAsync()
+    {
+        try
+        {
+            foreach (var channelName in _metrics.Sync.MissingChannels)
+            {
+                _logger.LogInformation($"🔨 Channel ekleniyor: {channelName}");
+
+                // Bu channel'a ait ilk device'ı bul (channel JSON'u için)
+                var sampleDevice = _metrics.Sync.DatabaseDevices.FirstOrDefault(d => d.ChannelName == channelName);
+                if (sampleDevice == null)
                 {
-                    await BrowseChildNodesAsync(reference.NodeId.ToString(), channels);
+                    _logger.LogError($"❌ Channel {channelName} için örnek device bulunamadı");
+                    _metrics.Sync.FailedChannels.Add(channelName);
+                    continue;
+                }
+
+                var result = await _restApiManager.ChannelPostAsync(sampleDevice.ChannelJson);
+
+                if (result == "Success")
+                {
+                    _logger.LogInformation($"✅ Channel eklendi: {channelName}");
+                    _metrics.Sync.AddedChannels.Add(channelName);
+                }
+                else if (result == "Exist")
+                {
+                    _logger.LogInformation($"ℹ️ Channel zaten mevcut: {channelName}");
+                    _metrics.Sync.AlreadyExistingChannels.Add(channelName);
+                }
+                else
+                {
+                    _logger.LogError($"❌ Channel eklenemedi: {channelName}, Result: {result}");
+                    _metrics.Sync.FailedChannels.Add(channelName);
+                }
+
+                await Task.Delay(100); // Rate limiting
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Channel ekleme hatası");
+        }
+    }
+
+    private async Task AddMissingDevicesAsync()
+    {
+        try
+        {
+            foreach (var device in _metrics.Sync.MissingDevices)
+            {
+                _logger.LogInformation($"🔨 Device ekleniyor: {device.ChannelName}.{device.DeviceId}");
+
+                var result = await _restApiManager.DevicePostAsync(device.DeviceJson, device.ChannelName);
+
+                if (result == "Success")
+                {
+                    _logger.LogInformation($"✅ Device eklendi: {device.ChannelName}.{device.DeviceId}");
+                    _metrics.Sync.AddedDevices.Add(device);
+
+                    // Tag'leri de ekle
+                    await AddDeviceTagsAsync(device);
+                }
+                else if (result == "Exist")
+                {
+                    _logger.LogInformation($"ℹ️ Device zaten mevcut: {device.ChannelName}.{device.DeviceId}");
+                    _metrics.Sync.AlreadyExistingDevices.Add(device);
+                }
+                else
+                {
+                    _logger.LogError($"❌ Device eklenemedi: {device.ChannelName}.{device.DeviceId}, Result: {result}");
+                    _metrics.Sync.FailedDevices.Add(device);
+                }
+
+                await Task.Delay(200); // Rate limiting
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Device ekleme hatası");
+        }
+    }
+
+    private async Task AddDeviceTagsAsync(KepDeviceInfo device)
+    {
+        try
+        {
+            // Individual tag'leri ekle
+            var individualTagList = await GetDeviceIndividualTagJsonAsync(device.DeviceId);
+            if (!string.IsNullOrEmpty(individualTagList) && individualTagList != "[]")
+            {
+                var tagResult = await _restApiManager.TagPostAsync(individualTagList, device.ChannelName, device.DeviceId.ToString());
+                _logger.LogDebug($"Individual tags result for {device.DeviceId}: {tagResult}");
+            }
+
+            // Device type tag'leri ekle
+            var typeTagList = await GetDeviceTagJsonAsync(device.DeviceId);
+            if (!string.IsNullOrEmpty(typeTagList) && typeTagList != "[]")
+            {
+                var tagResult = await _restApiManager.TagPostAsync(typeTagList, device.ChannelName, device.DeviceId.ToString());
+                _logger.LogDebug($"Type tags result for {device.DeviceId}: {tagResult}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, $"Tag ekleme hatası: Device {device.DeviceId}");
+        }
+    }
+
+    private async Task ValidateAddedItemsAsync()
+    {
+        try
+        {
+            _logger.LogInformation("🔍 Eklenen item'lar doğrulanıyor...");
+            await Task.Delay(3000); // KEP Server'ın güncellenmesini bekle
+
+            var newKepPaths = await GetKepServerChannelsAsync();
+            var stillMissingDevices = 0;
+            var stillMissingChannels = 0;
+
+            // Channel doğrulaması
+            foreach (var channel in _metrics.Sync.MissingChannels)
+            {
+                if (!newKepPaths.Any(p => p == channel || p.StartsWith($"{channel}.")))
+                {
+                    stillMissingChannels++;
+                    _logger.LogError($"❌ Channel hala eksik: {channel}");
+                }
+            }
+
+            // Device doğrulaması
+            foreach (var device in _metrics.Sync.MissingDevices)
+            {
+                var devicePath = $"{device.ChannelName}.{device.DeviceId}";
+                if (!newKepPaths.Contains(devicePath))
+                {
+                    stillMissingDevices++;
+                    _logger.LogError($"❌ Device hala eksik: {devicePath}");
+                }
+            }
+
+            _metrics.Sync.StillMissingChannels = stillMissingChannels;
+            _metrics.Sync.StillMissingDevices = stillMissingDevices;
+
+            if (stillMissingChannels == 0 && stillMissingDevices == 0)
+            {
+                _logger.LogInformation("✅ Tüm eksik item'lar başarıyla eklendi ve doğrulandı");
+            }
+            else
+            {
+                _logger.LogWarning($"⚠️ Doğrulama: {stillMissingChannels} channel, {stillMissingDevices} device hala eksik");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Doğrulama hatası");
+        }
+    }
+
+    private async Task FixMissingClientsAsync(ClientAnalysisResult clientAnalysis)
+    {
+        try
+        {
+            if (clientAnalysis.DevicesWithoutClient > 0)
+            {
+                _logger.LogInformation($"🔧 {clientAnalysis.DevicesWithoutClient} device'ın client'ı eksik - düzeltiliyor...");
+
+                // En az yüklü client'ı bul
+                var minClient = clientAnalysis.DatabaseClients.OrderBy(c => c.DeviceCount).FirstOrDefault();
+                var targetClientId = minClient?.ClientId ?? 1;
+
+                // Toplu güncelleme - daha basit ve etkili
+                const string updateAllSql = @"
+                    UPDATE channeldevice 
+                    SET clientId = @ClientId 
+                    WHERE clientId IS NULL AND statusCode IN (11,31,41,51,61)";
+
+                var updatedRows = await _dbManager.ExecuteExchangerAsync(updateAllSql, new { ClientId = targetClientId });
+
+                _logger.LogInformation($"✅ {updatedRows} device Client {targetClientId}'a atandı");
+            }
+            else
+            {
+                _logger.LogInformation("✅ Tüm device'ların client'ı mevcut");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "💥 Client düzeltme hatası");
+        }
+    }
+
+    private async Task CollectFinalMetricsAsync()
+    {
+        try
+        {
+            _logger.LogInformation("📊 Final metrikler toplanıyor...");
+
+            // KEP Server'ı tekrar browse et
+            var finalPaths = await GetKepServerChannelsAsync();
+            _metrics.Final.TotalPaths = finalPaths.Count;
+
+            foreach (var path in finalPaths)
+            {
+                if (path.Contains('.') && path.Split('.').Length == 2)
+                {
+                    _metrics.Final.DevicePaths++;
+                    var channelName = path.Split('.')[0];
+                    _metrics.Final.UniqueChannels.Add(channelName);
+                }
+                else
+                {
+                    _metrics.Final.UniqueChannels.Add(path);
                 }
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, $"Child nodes okunamadı: {nodeId}");
+            _logger.LogError(ex, "💥 Final metrik toplama hatası");
         }
     }
 
@@ -587,9 +1128,128 @@ public class KepServerInitializer : IKepServerInitializer
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Aktif device'lar okunamadı");
+            _logger.LogError(ex, "❌ Aktif device'lar okunamadı");
             return new List<KepDeviceInfo>();
         }
+    }
+
+    private async Task<string> GetDeviceTagJsonAsync(int deviceId)
+    {
+        try
+        {
+            const string sql = "CALL sp_getDeviceTagjSons(@p_deviceId)";
+            var result = await _dbManager.QueryFirstExchangerAsync<string>(sql, new { p_deviceId = deviceId });
+            return result ?? "[]";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Device tag JSON alınamadı: {deviceId}");
+            return "[]";
+        }
+    }
+
+    private async Task<string> GetDeviceIndividualTagJsonAsync(int deviceId)
+    {
+        try
+        {
+            const string sql = "CALL sp_getDeviceIndividualTagJsons(@p_deviceId)";
+            var result = await _dbManager.QueryFirstExchangerAsync<string>(sql, new { p_deviceId = deviceId });
+            return result ?? "[]";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Device individual tag JSON alınamadı: {deviceId}");
+            return "[]";
+        }
+    }
+
+    private void LogFinalReport()
+    {
+        _logger.LogInformation("");
+        _logger.LogInformation("🎯 ================================");
+        _logger.LogInformation("🎯 SYNC RAPORU - ÖZET");
+        _logger.LogInformation("🎯 ================================");
+
+        _logger.LogInformation($"⏱️ SÜRE BİLGİLERİ:");
+        _logger.LogInformation($"   • Browse süresi: {_metrics.KepServer.BrowseDuration.TotalMilliseconds:F0}ms");
+        _logger.LogInformation($"   • Ekleme süresi: {_metrics.Sync.AddDuration.TotalMilliseconds:F0}ms");
+        _logger.LogInformation($"   • Toplam süre: {_metrics.TotalSyncDuration.TotalMilliseconds:F0}ms");
+
+        _logger.LogInformation($"📊 DATABASE:");
+        _logger.LogInformation($"   • Toplam Channel: {_metrics.Database.TotalChannels}");
+        _logger.LogInformation($"   • Aktif Channel: {_metrics.Database.ActiveChannels}");
+        _logger.LogInformation($"   • Toplam Device: {_metrics.Database.TotalDevices}");
+        _logger.LogInformation($"   • Aktif Device: {_metrics.Database.ActiveDevices}");
+        _logger.LogInformation($"   • Type Tag: {_metrics.Database.TotalTypeTags:N0}");
+        _logger.LogInformation($"   • Individual Tag: {_metrics.Database.TotalIndividualTags:N0}");
+
+        _logger.LogInformation($"🔍 KEP SERVER (BAŞLANGIÇ):");
+        _logger.LogInformation($"   • Toplam Path: {_metrics.KepServer.AllPaths.Count}");
+        _logger.LogInformation($"   • Unique Channel: {_metrics.KepServer.ChannelNames.Count}");
+        _logger.LogInformation($"   • Device Path: {_metrics.KepServer.DevicePaths.Count}");
+
+        _logger.LogInformation($"🔄 SENKRONIZASYON SONUÇLARI:");
+        _logger.LogInformation($"   • Eksik Channel bulundu: {_metrics.Sync.MissingChannels.Count}");
+        _logger.LogInformation($"   • Eksik Device bulundu: {_metrics.Sync.MissingDevices.Count}");
+        _logger.LogInformation($"   • Channel eklendi: {_metrics.Sync.AddedChannels.Count}");
+        _logger.LogInformation($"   • Device eklendi: {_metrics.Sync.AddedDevices.Count}");
+        _logger.LogInformation($"   • Channel zaten mevcut: {_metrics.Sync.AlreadyExistingChannels.Count}");
+        _logger.LogInformation($"   • Device zaten mevcut: {_metrics.Sync.AlreadyExistingDevices.Count}");
+        _logger.LogInformation($"   • Channel ekleme hatası: {_metrics.Sync.FailedChannels.Count}");
+        _logger.LogInformation($"   • Device ekleme hatası: {_metrics.Sync.FailedDevices.Count}");
+
+        _logger.LogInformation($"✅ KEP SERVER (FİNAL):");
+        _logger.LogInformation($"   • Toplam Path: {_metrics.Final.TotalPaths}");
+        _logger.LogInformation($"   • Unique Channel: {_metrics.Final.UniqueChannels.Count}");
+        _logger.LogInformation($"   • Device Path: {_metrics.Final.DevicePaths}");
+
+        if (_metrics.Sync.StillMissingChannels > 0 || _metrics.Sync.StillMissingDevices > 0)
+        {
+            _logger.LogWarning($"⚠️ HALA EKSİK OLANLAR:");
+            _logger.LogWarning($"   • Eksik channel: {_metrics.Sync.StillMissingChannels}");
+            _logger.LogWarning($"   • Eksik device: {_metrics.Sync.StillMissingDevices}");
+        }
+
+        // Status dağılımı
+        if (_metrics.Database.StatusDistribution.Any())
+        {
+            _logger.LogInformation($"📈 STATUS DAĞILIMI:");
+            foreach (var status in _metrics.Database.StatusDistribution.OrderBy(x => x.Key))
+            {
+                _logger.LogInformation($"   • Status {status.Key}: {status.Value} device");
+            }
+        }
+
+        _logger.LogInformation("🎯 ================================");
+        _logger.LogInformation("");
+    }
+
+    private void LogTagDiscrepancy(TagAnalysisResult tagAnalysis)
+    {
+        _logger.LogInformation("");
+        _logger.LogInformation("🏷️ ================================");
+        _logger.LogInformation("🏷️ TAG UYUŞMAZLIK ANALİZİ");
+        _logger.LogInformation("🏷️ ================================");
+
+        _logger.LogInformation($"📊 BEKLENEN vs GERÇEK:");
+        _logger.LogInformation($"   • Database'de beklenen: {tagAnalysis.DatabaseTotalExpectedTags:N0} tag");
+        _logger.LogInformation($"   • KEP Server'da görülen: 125,000 tag (sizin belirttiğiniz)");
+        _logger.LogInformation($"   • Fark: {tagAnalysis.DatabaseTotalExpectedTags - 125000:N0} tag eksik");
+
+        if (tagAnalysis.DatabaseTotalExpectedTags > 125000)
+        {
+            var missingPercentage = ((double)(tagAnalysis.DatabaseTotalExpectedTags - 125000) / tagAnalysis.DatabaseTotalExpectedTags) * 100;
+            _logger.LogWarning($"⚠️ %{missingPercentage:F1} tag eksik!");
+
+            _logger.LogInformation($"🔍 MUHTEMEL SEBEPLER:");
+            _logger.LogInformation($"   1. Bazı device'lar KEP Server'a eklenmemiş");
+            _logger.LogInformation($"   2. Tag JSON'ları hatalı veya boş");
+            _logger.LogInformation($"   3. KEP Server API timeout'ları");
+            _logger.LogInformation($"   4. Client'siz device'lar ({tagAnalysis.DatabaseActiveDevices - tagAnalysis.ClientDistribution.Sum(c => c.DeviceCount)} device)");
+        }
+
+        _logger.LogInformation("🏷️ ================================");
+        _logger.LogInformation("");
     }
 
     public void Dispose()
@@ -598,6 +1258,111 @@ public class KepServerInitializer : IKepServerInitializer
         _session?.Dispose();
     }
 
-    // Driver ayarlarını alma metodu - diğer servislerde de kullanılabilir
     public DriverInfo? GetDriverInfo() => _driverInfo;
+}
+
+// Metrikler için model sınıfları
+public class SyncMetrics
+{
+    public DatabaseMetrics Database { get; set; } = new();
+    public KepServerMetrics KepServer { get; set; } = new();
+    public SyncProcessMetrics Sync { get; set; } = new();
+    public FinalMetrics Final { get; set; } = new();
+    public TimeSpan TotalSyncDuration { get; set; }
+}
+
+public class DatabaseMetrics
+{
+    public int TotalChannels { get; set; }
+    public int ActiveChannels { get; set; }
+    public int TotalDevices { get; set; }
+    public int ActiveDevices { get; set; }
+    public int TotalDeviceTypes { get; set; }
+    public int TotalTypeTags { get; set; }
+    public int TotalIndividualTags { get; set; }
+    public Dictionary<byte, int> StatusDistribution { get; set; } = new();
+}
+
+public class KepServerMetrics
+{
+    public HashSet<string> AllPaths { get; set; } = new();
+    public HashSet<string> ChannelNames { get; set; } = new();
+    public HashSet<string> DevicePaths { get; set; } = new();
+    public TimeSpan BrowseDuration { get; set; }
+}
+
+public class SyncProcessMetrics
+{
+    public List<KepDeviceInfo> DatabaseDevices { get; set; } = new();
+    public List<string> MissingChannels { get; set; } = new();
+    public List<KepDeviceInfo> MissingDevices { get; set; } = new();
+    public List<string> ExtraChannels { get; set; } = new();
+    public List<string> ExtraDevices { get; set; } = new();
+
+    public List<string> AddedChannels { get; set; } = new();
+    public List<KepDeviceInfo> AddedDevices { get; set; } = new();
+    public List<string> AlreadyExistingChannels { get; set; } = new();
+    public List<KepDeviceInfo> AlreadyExistingDevices { get; set; } = new();
+    public List<string> FailedChannels { get; set; } = new();
+    public List<KepDeviceInfo> FailedDevices { get; set; } = new();
+
+    public int StillMissingChannels { get; set; }
+    public int StillMissingDevices { get; set; }
+    public int ClientCount { get; set; }
+    public int DevicesPerClient { get; set; }
+    public TimeSpan AddDuration { get; set; }
+}
+
+public class FinalMetrics
+{
+    public int TotalPaths { get; set; }
+    public HashSet<string> UniqueChannels { get; set; } = new();
+    public int DevicePaths { get; set; }
+}
+
+// Tag analizi için model sınıfları
+public class TagAnalysisResult
+{
+    public int DatabaseActiveDevices { get; set; }
+    public long DatabaseTypeTagCount { get; set; }
+    public long DatabaseIndividualTagCount { get; set; }
+    public long DatabaseTotalExpectedTags { get; set; }
+    public List<DeviceTagDetail> TopDevices { get; set; } = new();
+    public List<ClientTagDetail> ClientDistribution { get; set; } = new();
+}
+
+public class DeviceTagDetail
+{
+    public int DeviceId { get; set; }
+    public string ChannelName { get; set; } = "";
+    public int ClientId { get; set; }
+    public byte StatusCode { get; set; }
+    public int TypeTagCount { get; set; }
+    public int IndividualTagCount { get; set; }
+    public int TotalTags { get; set; }
+}
+
+public class ClientTagDetail
+{
+    public int ClientId { get; set; }
+    public int DeviceCount { get; set; }
+    public long TypeTagCount { get; set; }
+    public long IndividualTagCount { get; set; }
+    public long TotalTags { get; set; }
+}
+
+// Client analizi için model sınıfları
+public class ClientAnalysisResult
+{
+    public List<ClientInfo> DatabaseClients { get; set; } = new();
+    public List<ClientInfo> KepServerClients { get; set; } = new();
+    public int DevicesWithoutClient { get; set; }
+}
+
+public class ClientInfo
+{
+    public int ClientId { get; set; }
+    public int DeviceCount { get; set; }
+    public string Source { get; set; } = "";
+    public long TagCount { get; set; }
 }
